@@ -34,7 +34,7 @@ class MyDDIMScheduler(DDIMScheduler):
             generator=None,
             variance_noise: Optional[torch.FloatTensor] = None,
             return_dict: bool = True,
-    ) -> Union[DDIMSchedulerOutput, Tuple]:
+    ) -> Union[SchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion 
         process from the learned model outputs (most often the predicted noise).
@@ -59,11 +59,11 @@ class MyDDIMScheduler(DDIMScheduler):
                 Alternative to generating noise with `generator` by directing providing the noise for the variance
                 itself. Useful for methods such as [`CycleDiffusion`].
             return_dict (`bool`, *optional*, defaults to `True`):
-                Whether or not to return a [`~schedulers.scheduling_ddim.DDIMSchedulerOutput`] or `tuple`.
+                Whether or not to return a [`SchedulerOutput`] or `tuple`.
         
         Returns:
-            [`~schedulers.scheduling_utils.DDIMSchedulerOutput`] or `tuple`:
-                If return_dict is `True`, [`~schedulers.scheduling_ddim.DDIMSchedulerOutput`] is returned, otherwise a
+            [`SchedulerOutput`] or `tuple`:
+                If return_dict is `True`, [`SchedulerOutput`] is returned, otherwise a
                 tuple is returned where the first element is the sample tensor.
         """
         if self.num_inference_steps is None:
@@ -150,7 +150,229 @@ class MyEulerAncestralDiscreteScheduler(EulerAncestralDiscreteScheduler):
         sigma_to = self.sigmas[self.step_index + 1]
         sigma_up = (sigma_to**2 * (sigma_from**2 - sigma_to**2) / sigma_from**2) ** 0.5 
 
-        return self.noise_list[self.step_index] * sigma_up\
+        return self.noise_list[self.step_index] * sigma_up
+
+    def scale_model_input(
+            self, sample: torch.FloatTensor, timestep: Union[float, torch.FloatTensor]
+    ) -> torch.FloatTensor:
+        """
+        Ensures interchangeability with schedulers that need to scale the denoising model input depending on the
+        current timestep. Scales the denoising model input by `(sigma**2 + 1) ** 0.5` to match the Euler algorithm.
+
+        Args:
+            sample (`torch.FloatTensor`):
+                The input sample.
+            timestep (`int`, *optional*):
+                The current timestep in the diffusion chain.
+        
+        Returns:
+            `torch.FloatTensor`:
+                A scaled input sample.
+        """
+
+        self._init_step_index(timestep.view((1)))
+        return EulerAncestralDiscreteScheduler.scale_model_input(self, sample, timestep)
+    
+    def step(
+            self,
+            model_output: torch.FloatTensor,
+            timestep: Union[float, torch.FloatTensor],
+            sample: torch.FloatTensor,
+            generator: Optional[torch.Generator] = None,
+            return_dict: bool = True,
+    ) -> Union[SchedulerOutput, Tuple]:
+        """
+        Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion 
+        process from the learned model outputs (most often the predicted noise).
+
+        Args:
+            model_output (`torch.FloatTensor`):
+                The direct output from learned diffusion model.
+            timestep (`float`):
+                The current discrete timestep in the diffusion chain.
+            sample (`torch.FloatTensor`):
+                A current instance of a sample created by the diffusion process.
+            generator (`torch.Generator`, *optional*):
+                A random number generator.
+            return_dict (`bool`):
+                Whether or not to return a 
+                [`SchedulerOutput`] or tuple.
+
+        Returns:
+            [`~schedulers.scheduling_euler_ancestral_discrete.EulerAncestralDiscreteSchedulerOutput`] or `tuple`:
+                If return_dict is `True`,
+                [`SchedulerOutput`] is returned,
+                otherwise a tuple is returned where the first element is the sample tensor.
+
+        """
+
+        if (
+            isinstance(timestep, int)
+            or isinstance(timestep, torch.IntTensor)
+            or isinstance(timestep, torch.LongTensor)
+        ):
+            raise ValueError(
+                (
+                    "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to"
+                    " `EulerDiscreteScheduler.step()` is not supported. Make sure to pass"
+                    " one of the `scheduler.timesteps` as a timestep."
+                ),
+            )
+        
+        if not self.is_scale_input_called:
+            logger.warning(
+                "The `scale_model_input` function should be called before `step` to ensure correct denoising. "
+                "See `StableDiffusionPipeline` for a usage example."
+            )
+        
+        self._init_step_index(timestep.view(1))
+
+        sigma = self.sigmas[self.step_index]
+
+        # Upcast to avoid precision issues when computing prev_sample
+        sample = sample.to(torch.float32)
+
+        # 1. compute predicted original sample (x_0) from sigma-scaled predicted noise
+        if self.config.prediction_type == "epsilon":
+            pred_original_sample = sample - sigma * model_output 
+        elif self.config.prediction_type == "v_prediction":
+            # * c_out + input * c_skip
+            pred_original_sample = model_output * (-sigma / (sigma**2 +1) **0.5) + (sample / (sigma**2 + 1))
+        elif self.config.prediction_type == "sample":
+            raise NotImplementedError("prediction_type not implemented yet: sample")
+        else:
+            raise ValueError(
+                f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, or `v_prediction`"
+            )
+    
+        sigma_from = self.sigmas[self.step_index]
+        sigma_to = self.sigmas[self.step_index + 1]
+        sigma_up = (sigma_to**2 * (sigma_from**2 - sigma_to**2) / sigma_from**2) ** 0.5
+        sigma_down = (sigma_to**2 - sigma_up**2) ** 0.5 
+
+        # 2. Convert to an ODE derivative
+        # derivative = (sample - pred_original_sample) / sigma
+        derivative = model_output 
+
+        dt = sigma_down - sigma 
+
+        prev_sample = sample + derivative * dt 
+
+        device = model_output.device 
+        # noise = randn_tensor(model_output.shape, dtype=model_output.dtype, device=device, generator=generator)
+        # prev_sample = prev_sample + noise * sigma_up 
+
+        prev_sample = prev_sample + self.noise_list[self.step_index] * sigma_up 
+
+        # Cast sample back to model compatible dtype 
+        prev_sample = prev_sample.to(model_output.dtype)
+
+        # upon completion increase step index by one 
+        self._step_index += 1 
+
+        if not return_dict:
+            return (prev_sample,)
+        
+        return SchedulerOutput(
+            prev_sample=prev_sample, pred_original_sample=pred_original_sample
+        )
+    
+    def step_and_update_noise(
+            self,
+            model_output: torch.FloatTensor,
+            timestep: Union[float, torch.FloatTensor],
+            sample: torch.FloatTensor,
+            expected_prev_sample: torch.FloatTensor,
+            optimize_epsilon_type: bool = False,
+            generator: Optional[torch.Generator] = None,
+            return_dict: bool = True,
+    ) -> Union[SchedulerOutput, Tuple]:
+        """
+        Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
+        process from the learned model outputs (most often the predicted noise).
+
+        Args:
+            model_output (`torch.FloatTensor`):
+                The direct output from learned diffusion model.
+            timestep (`float`):
+                The current discrete timestep in the diffusion chain.
+            sample (`torch.FloatTensor`):
+                A current instance of a sample created by the diffision process.
+            generator (`torch.Generator`, *optional*):
+                A random number generator.
+            return_dict (`bool`):
+                Whether or not to return a 
+                [`SchedulerOutput`] or `tuple`.
+            
+        Returns:
+            [`~SchedulerOutput`] or `tuple`:
+                If return_dict is `True`,
+                [`SchedulerOutput`] is returned,
+                otherwise a tuple is returned where the first element is the sample tensor.
+
+        """
+
+        if(
+            isinstance(timestep, int)
+            or isinstance(timestep, torch.IntTensor)
+            or isinstance(timestep, torch.LongTensor)
+        ):
+            raise ValueError(
+                (
+                    "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to"
+                    " `EulerDiscreteScheduler.step()` is not supported. Make sure to pass"
+                    "one of the `scheduler.timesteps` as a timestep."
+                ),
+            )
+        
+        if not self.is_scale_input_called:
+            logger.warning(
+                "The `scale_model_input` function should be called before `step` to ensure correct denoising. "
+                "See `StableDiffusionPipeline` for a usage example."
+            )
+
+        self._init_step_index(timestep.view(1))
+
+        sigma = self.sigmas[self.step_index]
+
+        # Upcast to avoid precision issues when computing prev_sample 
+        sample = sample.to(torch.float32)
+
+        # 1. compute predicted original sample (x_0) from sigma-scaled predicted noise 
+        if self.config.prediction_type == "epsilon":
+            pred_original_sample = sample - sigma * model_output 
+        elif self.config.prediction_type == "v_prediction":
+            # * c_out + input * c_skip 
+            pred_original_sample = model_output * (-sigma / (sigma**2 + 1) ** 0.5) + (sample / (sigma**2 + 1))
+        elif self.config.prediction_type == "sample":
+            raise NotImplementedError("prediction_type not implemented yet: sample")
+        else:
+            raise ValueError(
+                f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, or `v_prediction`"
+            )
+        
+        sigma_from = self.sigmas[self.step_index]
+        sigma_to = self.sigmas[self.step_index + 1]
+        sigma_up = (sigma_to**2 * (sigma_from**2 - sigma_to**2) / sigma_from**2) ** 0.5 
+        sigma_down = (sigma_to**2 - sigma_up**2) ** 0.5 
+
+        # 2. Convert to an ODE derivative 
+        # derivative = (sample - pred_original_sample) / sigma 
+        derivative = model_output 
+
+        dt = sigma_down - sigma 
+
+        prev_sample = sample + derivative * dt 
+
+        device = model_output.device 
+        # noise = randn_tensor(model_output.shape, dtype=model_output.dtype, device=device, generator=generator)
+        # prev_sample = prev_sample + noise * sigma_up 
+
+        
+
+
+
+
         
     
 
