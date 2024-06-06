@@ -368,7 +368,44 @@ class MyEulerAncestralDiscreteScheduler(EulerAncestralDiscreteScheduler):
         # noise = randn_tensor(model_output.shape, dtype=model_output.dtype, device=device, generator=generator)
         # prev_sample = prev_sample + noise * sigma_up 
 
+        if sigma_up > 0:
+            req_noise = (expected_prev_sample - prev_sample) / sigma_up 
+            if not optimize_epsilon_type:
+                self.noise_list[self.step_index] = req_noise 
+            else:
+                for i in range(10):
+                    n = torch.autograd.Variable(self.noise_list[self.step_index].detach().clone(), requires_grad=True)
+                    loss = torch.norm(n - req_noise.detach())
+                    loss.backward()
+                    self.noise_list[self.step_index] -= n.grad.detach() * 1.8 
+
+        prev_sample = prev_sample + self.noise_list[self.step_index] * sigma_up 
+
+        # Cast sample back to model compatible dtype 
+        prev_sample = prev_sample.to(model_output.dtype)
+
+        # upon completion increase step index by one 
+        self._step_index += 1
+
+        if not return_dict:
+            return (prev_sample,)
         
+        return SchedulerOutput(
+            prev_sample=prev_sample, pred_original_sample=pred_original_sample 
+        )
+    
+    def inv_step(
+            self,
+            model_output: torch.FloatTensor,
+            timestep: Union[float, torch.FloatTensor],
+            sample: torch.FloatTensor,
+            generator: Optional[torch.Generator] = None, 
+            return_dict: bool = True,
+    ) -> Union[SchedulerOutput, Tuple]:
+        """
+        Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
+        process from the learned model outputs (most often the predicted noise).
+        """
 
 
 
