@@ -1,7 +1,7 @@
 import torch 
 from PIL import Image 
 from typing import List, Optional, Tuple, Union
-from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline, DDIMScheduler, EulerAncestralDiscreteScheduler
+from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline, DDIMScheduler, EulerAncestralDiscreteScheduler, LCMScheduler
 from diffusers.utils import BaseOutput 
 from diffusers.utils.torch_utils import randn_tensor
 import numpy as np 
@@ -500,7 +500,39 @@ class MyEulerAncestralDiscreteScheduler(EulerAncestralDiscreteScheduler):
             prev_sample=prev_sample, pred_original_sample=pred_original_sample 
         )
     
+    def get_all_sigmas(self) -> torch.FloatTensor:
+        sigmas = np.array(((1 - self.alphas_cumprod) / self.alphas_cumprod) ** 0.5)
+        sigmas = np.concatenate([sigmas[::-1], [0.0]]).astype(np.float32)
+        return torch.from_numpy(sigmas)
     
+    def add_noise_off_schedule(
+            self,
+            original_samples: torch.FloatTensor,
+            noise: torch.FloatTensor,
+            timesteps: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        # Make sure sigmas and  timesteps have the same device and dtype as original_samples 
+        sigmas = self.get_all_sigmas()
+        sigmas = sigmas.to(device=original_samples.device, dtype=original_samples.dtype)
+        if original_samples.device.type == "mps" and torch.is_floating_point(timesteps):
+            # mps does not support float64 
+            timesteps = timesteps.to(original_samples.device, dtype=torch.float32)
+        else:
+            timesteps = timesteps.to(original_samples.device)
+            
+        step_indices = 1000 - int(timesteps.item())
+
+        sigma = sigmas[step_indices].flatten()
+        while len(sigma.shape) < len(original_samples.shape):
+            sigma = sigma.unsqueeze(-1)
+        
+        noisy_samples = original_samples + noise * sigma 
+        return noisy_samples 
+    
+
+
+
+
 
 
 
