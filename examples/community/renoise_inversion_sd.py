@@ -1,11 +1,16 @@
 import torch 
 import torch.nn.functional as F 
 from PIL import Image 
-from typing import List, Optional, Tuple, Union
-from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline, DDIMScheduler, EulerAncestralDiscreteScheduler, LCMScheduler
+from typing import List, Optional, Tuple, Union, Any, Callable, Dict
+from diffusers import StableDiffusionImg2ImgPipeline, DDIMScheduler, EulerAncestralDiscreteScheduler, LCMScheduler
 from diffusers.utils import BaseOutput 
 from diffusers.utils.torch_utils import randn_tensor
 import numpy as np 
+from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
+    StableDiffusionPipelineOutput,
+    retrieve_timesteps,
+    PipelineImageInput
+)
 
 class SchedulerOutput(BaseOutput):
     """
