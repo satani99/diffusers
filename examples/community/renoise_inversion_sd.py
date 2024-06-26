@@ -1079,7 +1079,7 @@ class SDXLDDIMPipeline(StableDiffusionXLImg2ImgPipeline):
             strength: float = 0.3,
             num_inversion_steps: int = 50,
             timesteps: List[int] = None,
-            denosing_start: Optional[float] = None,
+            denoising_start: Optional[float] = None,
             denoising_end: Optional[float] = None,
             guidance_scale: float = 1.0,
             negative_prompt: Optional[Union[str, List[str]]] = None,
@@ -1318,7 +1318,120 @@ class SDXLDDIMPipeline(StableDiffusionXLImg2ImgPipeline):
         self.maybe_free_model_hooks() 
 
         return StableDiffusionXLPipelineOutput(image=image), all_latents
+    
 
 def _get_pipes(model_name, device):
     if 'xl' in model_name.lower():
-        pipeline_inf, pipeline_inv = StableDiffusionXLImg2ImgPipeline, SDXLDDIMPipeline 
+        pipeline_inf, pipeline_inv = StableDiffusionXLImg2ImgPipeline, SDXLDDIMPipeline
+    else:
+        pipeline_inf, pipeline_inv = StableDiffusionImg2ImgPipeline, SDDDIMPipeline 
+    
+    if 'xl' in model_name.lower():
+        pipe_inference = pipeline_inf.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            use_safetensors=True,
+            variant="fp16",
+            safety_checker=None,
+        ).to(device)
+    else:
+        pipe_inference = pipeline_inf.from_pretrained(
+            model_name,
+            use_safetensors=True,
+            safety_checker=None,
+        ).to(device)
+
+    pipe_inversion = pipeline_inv(**pipe_inference.components)
+
+    return pipe_inversion, pipe_inference 
+
+def get_pipes(model_name, scheduler_name, device="cuda"):
+    if scheduler_name.lower() == "ddim":
+        scheduler_class = MyDDIMScheduler
+    elif scheduler_name.lower() == "euler":
+        scheduler_class = MyEulerAncestralDiscreteScheduler
+    elif scheduler_name.lower() == "lcm":
+        scheduler_class = MyLCMScheduler 
+    else:
+        raise ValueError("Unknown scheduler type")
+    
+    pipe_inversion, pipe_inference = _get_pipes(model_name, device)
+
+    pipe_inference.scheduler = scheduler_class.from_config(pipe_inference.scheduler.config)
+    pipe_inversion.scheduler = scheduler_class.from_config(pipe_inversion.scheduler.config)
+
+    if not "xl" in model_name.lower():
+        pipe_inference.scheduler.add_noise = lambda init_latents, noise, timestep: init_latents 
+        pipe_inversion.scheduler.add_noise = lambda init_latents, noise, timestep: init_latents 
+
+    if "lcm" in scheduler_name.lower() and "xl" in model_name.lower():
+        adapter_id = "latent-consistency/lcm-lora-sdxl"
+        pipe_inversion.load_lora_weights(adapter_id)
+        pipe_inference.load_lora_weights(adapter_id)
+    
+    return pipe_inversion, pipe_inference 
+
+def create_noise_list(img_size, length, generator=None):
+    VQAE_SCALE = 8
+    latents_size = (1, 4, img_size[0] // VQAE_SCALE, img_size[1] // VQAE_SCALE)
+    return [randn_tensor(latents_size, dtype=torch.float16, device=torch.device("cuda:0"), generator=generator) for i in range(length)]
+
+def invert(init_image: Image,
+           prompt: str,
+           seed: 42,
+           scheduler_name="euler",
+           num_inversion_steps=4,
+           num_inference_steps=4,
+           guidance_scale=0.0,
+           inversion_max_step=1.0,
+           num_renoise_steps=9,
+           pipe_inversion,
+           pipe_inference,
+           latents = None,
+           edit_prompt = None,
+           edit_cfg = 1.0,
+           noise = None,
+           do_reconstruction = True):
+    
+    generator = torch.Generator().manual_seed(seed)
+
+    if "ddim" != scheduler_name.lower():
+        if latents is None:
+            noise = create_noise_list((512, 512), num_inversion_steps, generator=generator)
+        pipe_inversion.scheduler.set_noise_list(noise)
+        pipe_inference.shceduler.set_noise_list(noise)
+
+    all_latents = None 
+
+    if latents is None:
+        print("Inverting...")
+        res = pipe_inversion(prompt = prompt,
+                             num_inversion_steps = num_inversion_steps,
+                             num_inference_steps = num_inference_steps,
+                             generator = generator,
+                             image = init_image,
+                             guidance_scale = guidance_scale,
+                             strength = inversion_max_step,
+                             denoising_start = 1.0-inversion_max_step,
+                             num_renoise_steps = num_renoise_steps)
+        latents = res[0][0]
+        all_latents = res[1] 
+
+        inv_latent = latents.clone()
+
+    if do_reconstruction:
+        print("Generating...")
+        edit_prompt = prompt if edit_prompt is None else edit_prompt 
+        guidance_scale = edit_cfg 
+        img = pipe_inference(prompt = edit_prompt,
+                                num_inference_steps = num_inference_steps,
+                                negative_prompt = prompt,
+                                image = latents,
+                                strength = inversion_max_step,
+                                denoising_start = 1.0-inversion_max_step,
+                                guidance_scale = guidance_scale).images[0]
+    else:
+        img = None 
+
+    return img, inv_latent, noise, all_latents 
+
