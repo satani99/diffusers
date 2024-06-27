@@ -1378,6 +1378,8 @@ def create_noise_list(img_size, length, generator=None):
 
 def invert(init_image: Image,
            prompt: str,
+           pipe_inversion,
+           pipe_inference,
            seed: 42,
            scheduler_name="euler",
            num_inversion_steps=4,
@@ -1385,8 +1387,8 @@ def invert(init_image: Image,
            guidance_scale=0.0,
            inversion_max_step=1.0,
            num_renoise_steps=9,
-           pipe_inversion,
-           pipe_inference,
+        #    pipe_inversion,
+        #    pipe_inference,
            latents = None,
            edit_prompt = None,
            edit_cfg = 1.0,
@@ -1434,4 +1436,6 @@ def invert(init_image: Image,
         img = None 
 
     return img, inv_latent, noise, all_latents 
+
+
 
