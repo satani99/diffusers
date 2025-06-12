@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,10 +55,12 @@ from diffusers.utils.torch_utils import is_compiled_module
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.31.0.dev0")
+check_min_version("0.34.0.dev0")
 
 logger = get_logger(__name__)
 if is_torch_npu_available():
+    import torch_npu
+
     torch.npu.config.allow_internal_format = False
 
 DATASET_NAME_MAPPING = {
@@ -390,7 +392,7 @@ def parse_args(input_args=None):
         type=float,
         default=None,
         help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
-        "More details here: https://arxiv.org/abs/2303.09556.",
+        "More details here: https://huggingface.co/papers/2303.09556.",
     )
     parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model.")
     parser.add_argument(
@@ -468,6 +470,15 @@ def parse_args(input_args=None):
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
+    parser.add_argument(
+        "--image_interpolation_mode",
+        type=str,
+        default="lanczos",
+        choices=[
+            f.lower() for f in dir(transforms.InterpolationMode) if not f.startswith("__") and not f.endswith("__")
+        ],
+        help="The image interpolation method to use for resizing images.",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -481,7 +492,6 @@ def parse_args(input_args=None):
     # Sanity checks
     if args.dataset_name is None and args.train_data_dir is None:
         raise ValueError("Need either a dataset name or a training folder.")
-
     if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
         raise ValueError("`--proportion_empty_prompts` must be in the range [0, 1].")
 
@@ -540,6 +550,9 @@ def compute_vae_encodings(batch, vae):
     with torch.no_grad():
         model_input = vae.encode(pixel_values).latent_dist.sample()
     model_input = model_input * vae.config.scaling_factor
+
+    # There might have slightly performance improvement
+    # by changing model_input.cpu() to accelerator.gather(model_input)
     return {"model_input": model_input.cpu()}
 
 
@@ -819,9 +832,7 @@ def main(args):
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config_name,
-            cache_dir=args.cache_dir,
+            args.dataset_name, args.dataset_config_name, cache_dir=args.cache_dir, data_dir=args.train_data_dir
         )
     else:
         data_files = {}
@@ -859,7 +870,10 @@ def main(args):
             )
 
     # Preprocessing the datasets.
-    train_resize = transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR)
+    interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), None)
+    if interpolation is None:
+        raise ValueError(f"Unsupported interpolation mode {interpolation=}.")
+    train_resize = transforms.Resize(args.resolution, interpolation=interpolation)
     train_crop = transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution)
     train_flip = transforms.RandomHorizontalFlip(p=1.0)
     train_transforms = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
@@ -917,7 +931,7 @@ def main(args):
         # fingerprint used by the cache for the other processes to load the result
         # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
         new_fingerprint = Hasher.hash(args)
-        new_fingerprint_for_vae = Hasher.hash(vae_path)
+        new_fingerprint_for_vae = Hasher.hash((vae_path, args))
         train_dataset_with_embeddings = train_dataset.map(
             compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint
         )
@@ -935,7 +949,10 @@ def main(args):
     del compute_vae_encodings_fn, compute_embeddings_fn, text_encoder_one, text_encoder_two
     del text_encoders, tokenizers, vae
     gc.collect()
-    torch.cuda.empty_cache()
+    if is_torch_npu_available():
+        torch_npu.npu.empty_cache()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     def collate_fn(examples):
         model_input = torch.stack([torch.tensor(example["model_input"]) for example in examples])
@@ -1091,8 +1108,7 @@ def main(args):
                     # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
                     target_size = (args.resolution, args.resolution)
                     add_time_ids = list(original_size + crops_coords_top_left + target_size)
-                    add_time_ids = torch.tensor([add_time_ids])
-                    add_time_ids = add_time_ids.to(accelerator.device, dtype=weight_dtype)
+                    add_time_ids = torch.tensor([add_time_ids], device=accelerator.device, dtype=weight_dtype)
                     return add_time_ids
 
                 add_time_ids = torch.cat(
@@ -1132,7 +1148,7 @@ def main(args):
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
                 else:
-                    # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
+                    # Compute loss-weights as per Section 3.4 of https://huggingface.co/papers/2303.09556.
                     # Since we predict the noise instead of x_0, the original formulation is slightly changed.
                     # This is discussed in Section 4.2 of the same paper.
                     snr = compute_snr(noise_scheduler, timesteps)
@@ -1237,7 +1253,11 @@ def main(args):
                 pipeline.set_progress_bar_config(disable=True)
 
                 # run inference
-                generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
+                generator = (
+                    torch.Generator(device=accelerator.device).manual_seed(args.seed)
+                    if args.seed is not None
+                    else None
+                )
                 pipeline_args = {"prompt": args.validation_prompt}
 
                 with autocast_ctx:
@@ -1261,7 +1281,10 @@ def main(args):
                         )
 
                 del pipeline
-                torch.cuda.empty_cache()
+                if is_torch_npu_available():
+                    torch_npu.npu.empty_cache()
+                elif torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 if args.use_ema:
                     # Switch back to the original UNet parameters.
@@ -1298,7 +1321,9 @@ def main(args):
         images = []
         if args.validation_prompt and args.num_validation_images > 0:
             pipeline = pipeline.to(accelerator.device)
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
+            generator = (
+                torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
+            )
 
             with autocast_ctx:
                 images = [

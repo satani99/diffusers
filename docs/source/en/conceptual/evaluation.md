@@ -16,6 +16,11 @@ specific language governing permissions and limitations under the License.
     <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>
 
+> [!TIP]
+> This document has now grown outdated given the emergence of existing evaluation frameworks for diffusion models for image generation. Please check
+> out works like [HEIM](https://crfm.stanford.edu/helm/heim/latest/), [T2I-Compbench](https://huggingface.co/papers/2307.06350),
+> [GenEval](https://huggingface.co/papers/2310.11513).
+
 Evaluation of generative models like [Stable Diffusion](https://huggingface.co/docs/diffusers/stable_diffusion) is subjective in nature. But as practitioners and researchers, we often have to make careful choices amongst many different possibilities. So, when working with different generative models (like GANs, Diffusion, etc.), how do we choose one over the other?
 
 Qualitative evaluation of such models can be error-prone and might incorrectly influence a decision.
@@ -92,7 +97,7 @@ images = sd_pipeline(sample_prompts, num_images_per_prompt=1, generator=generato
 
 ![parti-prompts-14](https://huggingface.co/datasets/diffusers/docs-images/resolve/main/evaluation_diffusion_models/parti-prompts-14.png)
 
-We can also set `num_images_per_prompt` accordingly to compare different images for the same prompt. Running the same pipeline but with a different checkpoint ([v1-5](https://huggingface.co/runwayml/stable-diffusion-v1-5)), yields:
+We can also set `num_images_per_prompt` accordingly to compare different images for the same prompt. Running the same pipeline but with a different checkpoint ([v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5)), yields:
 
 ![parti-prompts-15](https://huggingface.co/datasets/diffusers/docs-images/resolve/main/evaluation_diffusion_models/parti-prompts-15.png)
 
@@ -117,7 +122,7 @@ In this section, we will walk you through how to evaluate three different diffus
 
 ### Text-guided image generation
 
-[CLIP score](https://arxiv.org/abs/2104.08718) measures the compatibility of image-caption pairs. Higher CLIP scores imply higher compatibility 🔼. The CLIP score is a quantitative measurement of the qualitative concept "compatibility". Image-caption pair compatibility can also be thought of as the semantic similarity between the image and the caption. CLIP score was found to have high correlation with human judgement.
+[CLIP score](https://huggingface.co/papers/2104.08718) measures the compatibility of image-caption pairs. Higher CLIP scores imply higher compatibility 🔼. The CLIP score is a quantitative measurement of the qualitative concept "compatibility". Image-caption pair compatibility can also be thought of as the semantic similarity between the image and the caption. CLIP score was found to have high correlation with human judgement.
 
 Let's first load a [`StableDiffusionPipeline`]:
 
@@ -177,11 +182,11 @@ generator = torch.manual_seed(seed)
 images = sd_pipeline(prompts, num_images_per_prompt=1, generator=generator, output_type="np").images
 ```
 
-Then we load the [v1-5 checkpoint](https://huggingface.co/runwayml/stable-diffusion-v1-5) to generate images:
+Then we load the [v1-5 checkpoint](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) to generate images:
 
 ```python
-model_ckpt_1_5 = "runwayml/stable-diffusion-v1-5"
-sd_pipeline_1_5 = StableDiffusionPipeline.from_pretrained(model_ckpt_1_5, torch_dtype=weight_dtype).to(device)
+model_ckpt_1_5 = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+sd_pipeline_1_5 = StableDiffusionPipeline.from_pretrained(model_ckpt_1_5, torch_dtype=torch.float16).to("cuda")
 
 images_1_5 = sd_pipeline_1_5(prompts, num_images_per_prompt=1, generator=generator, output_type="np").images
 ```
@@ -198,7 +203,7 @@ print(f"CLIP Score with v-1-5: {sd_clip_score_1_5}")
 # CLIP Score with v-1-5: 36.2137
 ```
 
-It seems like the [v1-5](https://huggingface.co/runwayml/stable-diffusion-v1-5) checkpoint performs better than its predecessor. Note, however, that the number of prompts we used to compute the CLIP scores is quite low. For a more practical evaluation, this number should be way higher, and the prompts should be diverse.
+It seems like the [v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) checkpoint performs better than its predecessor. Note, however, that the number of prompts we used to compute the CLIP scores is quite low. For a more practical evaluation, this number should be way higher, and the prompts should be diverse.
 
 <Tip warning={true}>
 
@@ -217,7 +222,7 @@ Here is one example:
 
 ![edit-instruction](https://huggingface.co/datasets/diffusers/docs-images/resolve/main/evaluation_diffusion_models/edit-instruction.png)
 
-One strategy to evaluate such a model is to measure the consistency of the change between the two images (in [CLIP](https://huggingface.co/docs/transformers/model_doc/clip) space) with the change between the two image captions (as shown in [CLIP-Guided Domain Adaptation of Image Generators](https://arxiv.org/abs/2108.00946)). This is referred to as the "**CLIP directional similarity**".
+One strategy to evaluate such a model is to measure the consistency of the change between the two images (in [CLIP](https://huggingface.co/docs/transformers/model_doc/clip) space) with the change between the two image captions (as shown in [CLIP-Guided Domain Adaptation of Image Generators](https://huggingface.co/papers/2108.00946)). This is referred to as the "**CLIP directional similarity**".
 
 - Caption 1 corresponds to the input image (image 1) that is to be edited.
 - Caption 2 corresponds to the edited image (image 2). It should reflect the edit instruction.
@@ -280,7 +285,7 @@ from diffusers import StableDiffusionInstructPix2PixPipeline
 
 instruct_pix2pix_pipeline = StableDiffusionInstructPix2PixPipeline.from_pretrained(
     "timbrooks/instruct-pix2pix", torch_dtype=torch.float16
-).to(device)
+).to("cuda")
 ```
 
 Now, we perform the edits:
@@ -326,9 +331,9 @@ from transformers import (
 
 clip_id = "openai/clip-vit-large-patch14"
 tokenizer = CLIPTokenizer.from_pretrained(clip_id)
-text_encoder = CLIPTextModelWithProjection.from_pretrained(clip_id).to(device)
+text_encoder = CLIPTextModelWithProjection.from_pretrained(clip_id).to("cuda")
 image_processor = CLIPImageProcessor.from_pretrained(clip_id)
-image_encoder = CLIPVisionModelWithProjection.from_pretrained(clip_id).to(device)
+image_encoder = CLIPVisionModelWithProjection.from_pretrained(clip_id).to("cuda")
 ```
 
 Notice that we are using a particular CLIP checkpoint, i.e., `openai/clip-vit-large-patch14`. This is because the Stable Diffusion pre-training was performed with this CLIP variant. For more details, refer to the [documentation](https://huggingface.co/docs/transformers/model_doc/clip).
@@ -350,7 +355,7 @@ class DirectionalSimilarity(nn.Module):
 
     def preprocess_image(self, image):
         image = self.image_processor(image, return_tensors="pt")["pixel_values"]
-        return {"pixel_values": image.to(device)}
+        return {"pixel_values": image.to("cuda")}
 
     def tokenize_text(self, text):
         inputs = self.tokenizer(
@@ -360,7 +365,7 @@ class DirectionalSimilarity(nn.Module):
             truncation=True,
             return_tensors="pt",
         )
-        return {"input_ids": inputs.input_ids.to(device)}
+        return {"input_ids": inputs.input_ids.to("cuda")}
 
     def encode_image(self, image):
         preprocessed_image = self.preprocess_image(image)
@@ -428,7 +433,7 @@ Both CLIP score and CLIP direction similarity rely on the CLIP model, which can 
 
 ### Class-conditioned image generation
 
-Class-conditioned generative models are usually pre-trained on a class-labeled dataset such as [ImageNet-1k](https://huggingface.co/datasets/imagenet-1k). Popular metrics for evaluating these models include Fréchet Inception Distance (FID), Kernel Inception Distance (KID), and Inception Score (IS). In this document, we focus on FID ([Heusel et al.](https://arxiv.org/abs/1706.08500)). We show how to compute it with the [`DiTPipeline`](https://huggingface.co/docs/diffusers/api/pipelines/dit), which uses the [DiT model](https://arxiv.org/abs/2212.09748) under the hood.
+Class-conditioned generative models are usually pre-trained on a class-labeled dataset such as [ImageNet-1k](https://huggingface.co/datasets/imagenet-1k). Popular metrics for evaluating these models include Fréchet Inception Distance (FID), Kernel Inception Distance (KID), and Inception Score (IS). In this document, we focus on FID ([Heusel et al.](https://huggingface.co/papers/1706.08500)). We show how to compute it with the [`DiTPipeline`](https://huggingface.co/docs/diffusers/api/pipelines/dit), which uses the [DiT model](https://huggingface.co/papers/2212.09748) under the hood.
 
 FID aims to measure how similar are two datasets of images. As per [this resource](https://mmgeneration.readthedocs.io/en/latest/quick_run.html#fid):
 
@@ -459,6 +464,7 @@ with ZipFile(local_filepath, "r") as zipper:
 ```python
 from PIL import Image
 import os
+import numpy as np
 
 dataset_path = "sample-imagenet-images"
 image_paths = sorted([os.path.join(dataset_path, x) for x in os.listdir(dataset_path)])
@@ -477,6 +483,7 @@ Now that the images are loaded, let's apply some lightweight pre-processing on t
 
 ```python
 from torchvision.transforms import functional as F
+import torch
 
 
 def preprocess_image(image):
@@ -497,6 +504,10 @@ from diffusers import DiTPipeline, DPMSolverMultistepScheduler
 dit_pipeline = DiTPipeline.from_pretrained("facebook/DiT-XL-2-256", torch_dtype=torch.float16)
 dit_pipeline.scheduler = DPMSolverMultistepScheduler.from_config(dit_pipeline.scheduler.config)
 dit_pipeline = dit_pipeline.to("cuda")
+
+seed = 0
+generator = torch.manual_seed(seed)
+
 
 words = [
     "cassette player",

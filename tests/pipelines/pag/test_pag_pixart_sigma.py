@@ -33,7 +33,6 @@ from diffusers.utils import logging
 from diffusers.utils.testing_utils import (
     CaptureLogger,
     enable_full_determinism,
-    print_tensor_test,
     torch_device,
 )
 
@@ -121,9 +120,9 @@ class PixArtSigmaPAGPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
         inputs = self.get_dummy_inputs(device)
         del inputs["pag_scale"]
-        assert (
-            "pag_scale" not in inspect.signature(pipe.__call__).parameters
-        ), f"`pag_scale` should not be a call parameter of the base pipeline {pipe.__class__.__name__}."
+        assert "pag_scale" not in inspect.signature(pipe.__call__).parameters, (
+            f"`pag_scale` should not be a call parameter of the base pipeline {pipe.__class__.__name__}."
+        )
         out = pipe(**inputs).images[0, -3:, -3:, -1]
 
         # pag disabled with pag_scale=0.0
@@ -173,7 +172,6 @@ class PixArtSigmaPAGPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         inputs = self.get_dummy_inputs(device)
         image = pipe_pag(**inputs).images
         image_slice = image[0, -3:, -3:, -1]
-        print_tensor_test(image_slice)
 
         assert image.shape == (
             1,
@@ -185,82 +183,6 @@ class PixArtSigmaPAGPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
         max_diff = np.abs(image_slice.flatten() - expected_slice).max()
         self.assertLessEqual(max_diff, 1e-3)
-
-    # Copied from tests.pipelines.pixart_sigma.test_pixart.PixArtSigmaPipelineFastTests.test_save_load_optional_components
-    def test_save_load_optional_components(self):
-        components = self.get_dummy_components()
-        pipe = self.pipeline_class(**components)
-        pipe.to(torch_device)
-        pipe.set_progress_bar_config(disable=None)
-
-        inputs = self.get_dummy_inputs(torch_device)
-
-        prompt = inputs["prompt"]
-        generator = inputs["generator"]
-        num_inference_steps = inputs["num_inference_steps"]
-        output_type = inputs["output_type"]
-
-        (
-            prompt_embeds,
-            prompt_attention_mask,
-            negative_prompt_embeds,
-            negative_prompt_attention_mask,
-        ) = pipe.encode_prompt(prompt)
-
-        # inputs with prompt converted to embeddings
-        inputs = {
-            "prompt_embeds": prompt_embeds,
-            "prompt_attention_mask": prompt_attention_mask,
-            "negative_prompt": None,
-            "negative_prompt_embeds": negative_prompt_embeds,
-            "negative_prompt_attention_mask": negative_prompt_attention_mask,
-            "generator": generator,
-            "num_inference_steps": num_inference_steps,
-            "output_type": output_type,
-            "use_resolution_binning": False,
-        }
-
-        # set all optional components to None
-        for optional_component in pipe._optional_components:
-            setattr(pipe, optional_component, None)
-
-        output = pipe(**inputs)[0]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            pipe.save_pretrained(tmpdir)
-            pipe_loaded = self.pipeline_class.from_pretrained(tmpdir, pag_applied_layers=["blocks.1"])
-            pipe_loaded.to(torch_device)
-            pipe_loaded.set_progress_bar_config(disable=None)
-
-        for optional_component in pipe._optional_components:
-            self.assertTrue(
-                getattr(pipe_loaded, optional_component) is None,
-                f"`{optional_component}` did not stay set to None after loading.",
-            )
-
-        inputs = self.get_dummy_inputs(torch_device)
-
-        generator = inputs["generator"]
-        num_inference_steps = inputs["num_inference_steps"]
-        output_type = inputs["output_type"]
-
-        # inputs with prompt converted to embeddings
-        inputs = {
-            "prompt_embeds": prompt_embeds,
-            "prompt_attention_mask": prompt_attention_mask,
-            "negative_prompt": None,
-            "negative_prompt_embeds": negative_prompt_embeds,
-            "negative_prompt_attention_mask": negative_prompt_attention_mask,
-            "generator": generator,
-            "num_inference_steps": num_inference_steps,
-            "output_type": output_type,
-            "use_resolution_binning": False,
-        }
-
-        output_loaded = pipe_loaded(**inputs)[0]
-
-        max_diff = np.abs(to_np(output) - to_np(output_loaded)).max()
-        self.assertLess(max_diff, 1e-4)
 
     # Because the PAG PixArt Sigma has `pag_applied_layers`.
     # Also, we shouldn't be doing `set_default_attn_processor()` after loading
@@ -332,7 +254,7 @@ class PixArtSigmaPAGPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
             assert_mean_pixel_difference(to_np(output_with_slicing1[0]), to_np(output_without_slicing[0]))
             assert_mean_pixel_difference(to_np(output_with_slicing2[0]), to_np(output_without_slicing[0]))
 
-    # Because we have `pag_applied_layers` we cannot direcly apply
+    # Because we have `pag_applied_layers` we cannot directly apply
     # `set_default_attn_processor`
     def test_dict_tuple_outputs_equivalent(self, expected_slice=None, expected_max_difference=1e-4):
         components = self.get_dummy_components()
@@ -421,3 +343,7 @@ class PixArtSigmaPAGPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
         self.assertTrue(hasattr(pipe, "components"))
         self.assertTrue(set(pipe.components.keys()) == set(init_components.keys()))
+
+    @unittest.skip("Test is already covered through encode_prompt isolation.")
+    def test_save_load_optional_components(self):
+        pass

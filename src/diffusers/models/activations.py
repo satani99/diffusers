@@ -18,18 +18,18 @@ import torch.nn.functional as F
 from torch import nn
 
 from ..utils import deprecate
-from ..utils.import_utils import is_torch_npu_available
+from ..utils.import_utils import is_torch_npu_available, is_torch_version
 
 
 if is_torch_npu_available():
     import torch_npu
 
-ACTIVATION_FUNCTIONS = {
-    "swish": nn.SiLU(),
-    "silu": nn.SiLU(),
-    "mish": nn.Mish(),
-    "gelu": nn.GELU(),
-    "relu": nn.ReLU(),
+ACT2CLS = {
+    "swish": nn.SiLU,
+    "silu": nn.SiLU,
+    "mish": nn.Mish,
+    "gelu": nn.GELU,
+    "relu": nn.ReLU,
 }
 
 
@@ -44,10 +44,10 @@ def get_activation(act_fn: str) -> nn.Module:
     """
 
     act_fn = act_fn.lower()
-    if act_fn in ACTIVATION_FUNCTIONS:
-        return ACTIVATION_FUNCTIONS[act_fn]
+    if act_fn in ACT2CLS:
+        return ACT2CLS[act_fn]()
     else:
-        raise ValueError(f"Unsupported activation function: {act_fn}")
+        raise ValueError(f"activation function {act_fn} not found in ACT2FN mapping {list(ACT2CLS.keys())}")
 
 
 class FP32SiLU(nn.Module):
@@ -79,10 +79,10 @@ class GELU(nn.Module):
         self.approximate = approximate
 
     def gelu(self, gate: torch.Tensor) -> torch.Tensor:
-        if gate.device.type != "mps":
-            return F.gelu(gate, approximate=self.approximate)
-        # mps: gelu is not implemented for float16
-        return F.gelu(gate.to(dtype=torch.float32), approximate=self.approximate).to(dtype=gate.dtype)
+        if gate.device.type == "mps" and is_torch_version("<", "2.0.0"):
+            # fp16 gelu not supported on mps before torch 2.0
+            return F.gelu(gate.to(dtype=torch.float32), approximate=self.approximate).to(dtype=gate.dtype)
+        return F.gelu(gate, approximate=self.approximate)
 
     def forward(self, hidden_states):
         hidden_states = self.proj(hidden_states)
@@ -92,7 +92,7 @@ class GELU(nn.Module):
 
 class GEGLU(nn.Module):
     r"""
-    A [variant](https://arxiv.org/abs/2002.05202) of the gated linear unit activation function.
+    A [variant](https://huggingface.co/papers/2002.05202) of the gated linear unit activation function.
 
     Parameters:
         dim_in (`int`): The number of channels in the input.
@@ -105,10 +105,10 @@ class GEGLU(nn.Module):
         self.proj = nn.Linear(dim_in, dim_out * 2, bias=bias)
 
     def gelu(self, gate: torch.Tensor) -> torch.Tensor:
-        if gate.device.type != "mps":
-            return F.gelu(gate)
-        # mps: gelu is not implemented for float16
-        return F.gelu(gate.to(dtype=torch.float32)).to(dtype=gate.dtype)
+        if gate.device.type == "mps" and is_torch_version("<", "2.0.0"):
+            # fp16 gelu not supported on mps before torch 2.0
+            return F.gelu(gate.to(dtype=torch.float32)).to(dtype=gate.dtype)
+        return F.gelu(gate)
 
     def forward(self, hidden_states, *args, **kwargs):
         if len(args) > 0 or kwargs.get("scale", None) is not None:
@@ -125,8 +125,8 @@ class GEGLU(nn.Module):
 
 class SwiGLU(nn.Module):
     r"""
-    A [variant](https://arxiv.org/abs/2002.05202) of the gated linear unit activation function. It's similar to `GEGLU`
-    but uses SiLU / Swish instead of GeLU.
+    A [variant](https://huggingface.co/papers/2002.05202) of the gated linear unit activation function. It's similar to
+    `GEGLU` but uses SiLU / Swish instead of GeLU.
 
     Parameters:
         dim_in (`int`): The number of channels in the input.
@@ -136,6 +136,7 @@ class SwiGLU(nn.Module):
 
     def __init__(self, dim_in: int, dim_out: int, bias: bool = True):
         super().__init__()
+
         self.proj = nn.Linear(dim_in, dim_out * 2, bias=bias)
         self.activation = nn.SiLU()
 
@@ -148,7 +149,7 @@ class SwiGLU(nn.Module):
 class ApproximateGELU(nn.Module):
     r"""
     The approximate form of the Gaussian Error Linear Unit (GELU). For more details, see section 2 of this
-    [paper](https://arxiv.org/abs/1606.08415).
+    [paper](https://huggingface.co/papers/1606.08415).
 
     Parameters:
         dim_in (`int`): The number of channels in the input.
@@ -163,3 +164,15 @@ class ApproximateGELU(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.proj(x)
         return x * torch.sigmoid(1.702 * x)
+
+
+class LinearActivation(nn.Module):
+    def __init__(self, dim_in: int, dim_out: int, bias: bool = True, activation: str = "silu"):
+        super().__init__()
+
+        self.proj = nn.Linear(dim_in, dim_out, bias=bias)
+        self.activation = get_activation(activation)
+
+    def forward(self, hidden_states):
+        hidden_states = self.proj(hidden_states)
+        return self.activation(hidden_states)

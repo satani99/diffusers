@@ -12,6 +12,10 @@ specific language governing permissions and limitations under the License.
 
 # Text2Video-Zero
 
+<div class="flex flex-wrap space-x-1">
+  <img alt="LoRA" src="https://img.shields.io/badge/LoRA-d8b4fe?style=flat"/>
+</div>
+
 [Text2Video-Zero: Text-to-Image Diffusion Models are Zero-Shot Video Generators](https://huggingface.co/papers/2303.13439) is by Levon Khachatryan, Andranik Movsisyan, Vahram Tadevosyan, Roberto Henschel, [Zhangyang Wang](https://www.ece.utexas.edu/people/faculty/atlas-wang), Shant Navasardyan, [Humphrey Shi](https://www.humphreyshi.com).
 
 Text2Video-Zero enables zero-shot video generation using either:
@@ -30,7 +34,7 @@ Our key modifications include (i) enriching the latent codes of the generated fr
 Experiments show that this leads to low overhead, yet high-quality and remarkably consistent video generation. Moreover, our approach is not limited to text-to-video synthesis but is also applicable to other tasks such as conditional and content-specialized video generation, and Video Instruct-Pix2Pix, i.e., instruction-guided video editing.
 As experiments show, our method performs comparably or sometimes better than recent approaches, despite not being trained on additional video data.*
 
-You can find additional information about Text2Video-Zero on the [project page](https://text2video-zero.github.io/), [paper](https://arxiv.org/abs/2303.13439), and [original codebase](https://github.com/Picsart-AI-Research/Text2Video-Zero).
+You can find additional information about Text2Video-Zero on the [project page](https://text2video-zero.github.io/), [paper](https://huggingface.co/papers/2303.13439), and [original codebase](https://github.com/Picsart-AI-Research/Text2Video-Zero).
 
 ## Usage example
 
@@ -40,8 +44,9 @@ To generate a video from prompt, run the following Python code:
 ```python
 import torch
 from diffusers import TextToVideoZeroPipeline
+import imageio
 
-model_id = "runwayml/stable-diffusion-v1-5"
+model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 pipe = TextToVideoZeroPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to("cuda")
 
 prompt = "A panda is playing guitar on times square"
@@ -50,9 +55,9 @@ result = [(r * 255).astype("uint8") for r in result]
 imageio.mimsave("video.mp4", result, fps=4)
 ```
 You can change these parameters in the pipeline call:
-* Motion field strength (see the [paper](https://arxiv.org/abs/2303.13439), Sect. 3.3.1):
+* Motion field strength (see the [paper](https://huggingface.co/papers/2303.13439), Sect. 3.3.1):
     * `motion_field_strength_x` and `motion_field_strength_y`. Default: `motion_field_strength_x=12`, `motion_field_strength_y=12`
-* `T` and `T'` (see the [paper](https://arxiv.org/abs/2303.13439), Sect. 3.3.1)
+* `T` and `T'` (see the [paper](https://huggingface.co/papers/2303.13439), Sect. 3.3.1)
     * `t0` and `t1` in the range `{0, ..., num_inference_steps}`. Default: `t0=45`, `t1=48`
 * Video length:
     * `video_length`, the number of frames video_length to be generated. Default: `video_length=8`
@@ -63,7 +68,7 @@ import torch
 from diffusers import TextToVideoZeroPipeline
 import numpy as np
 
-model_id = "runwayml/stable-diffusion-v1-5"
+model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 pipe = TextToVideoZeroPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to("cuda")
 seed = 0
 video_length = 24  #24 ÷ 4fps = 6 seconds
@@ -137,7 +142,7 @@ To generate a video from prompt with additional pose control
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
     from diffusers.pipelines.text_to_video_synthesis.pipeline_text_to_video_zero import CrossFrameAttnProcessor
 
-    model_id = "runwayml/stable-diffusion-v1-5"
+    model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
     controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
     pipe = StableDiffusionControlNetPipeline.from_pretrained(
         model_id, controlnet=controlnet, torch_dtype=torch.float16
@@ -283,7 +288,7 @@ You can filter out some available DreamBooth-trained models with [this link](htt
 
 <Tip>
 
-Make sure to check out the Schedulers [guide](../../using-diffusers/schedulers) to learn how to explore the tradeoff between scheduler speed and quality, and see the [reuse components across pipelines](../../using-diffusers/loading#reuse-components-across-pipelines) section to learn how to efficiently load the same components into multiple pipelines.
+Make sure to check out the Schedulers [guide](../../using-diffusers/schedulers) to learn how to explore the tradeoff between scheduler speed and quality, and see the [reuse components across pipelines](../../using-diffusers/loading#reuse-a-pipeline) section to learn how to efficiently load the same components into multiple pipelines.
 
 </Tip>
 

@@ -1,6 +1,5 @@
 import gc
 import random
-import traceback
 import unittest
 
 import numpy as np
@@ -22,13 +21,12 @@ from diffusers import (
     UniDiffuserTextDecoder,
 )
 from diffusers.utils.testing_utils import (
+    backend_empty_cache,
     enable_full_determinism,
     floats_tensor,
     load_image,
     nightly,
-    require_torch_2,
-    require_torch_gpu,
-    run_test_in_subprocess,
+    require_torch_accelerator,
     torch_device,
 )
 from diffusers.utils.torch_utils import randn_tensor
@@ -44,38 +42,6 @@ from ..test_pipelines_common import PipelineKarrasSchedulerTesterMixin, Pipeline
 enable_full_determinism()
 
 
-# Will be run via run_test_in_subprocess
-def _test_unidiffuser_compile(in_queue, out_queue, timeout):
-    error = None
-    try:
-        inputs = in_queue.get(timeout=timeout)
-        torch_device = inputs.pop("torch_device")
-        seed = inputs.pop("seed")
-        inputs["generator"] = torch.Generator(device=torch_device).manual_seed(seed)
-
-        pipe = UniDiffuserPipeline.from_pretrained("thu-ml/unidiffuser-v1")
-        # pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-        pipe = pipe.to(torch_device)
-
-        pipe.unet.to(memory_format=torch.channels_last)
-        pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead", fullgraph=True)
-
-        pipe.set_progress_bar_config(disable=None)
-
-        image = pipe(**inputs).images
-        image_slice = image[0, -3:, -3:, -1].flatten()
-
-        assert image.shape == (1, 512, 512, 3)
-        expected_slice = np.array([0.2402, 0.2375, 0.2285, 0.2378, 0.2407, 0.2263, 0.2354, 0.2307, 0.2520])
-        assert np.abs(image_slice - expected_slice).max() < 1e-1
-    except Exception:
-        error = f"{traceback.format_exc()}"
-
-    results = {"error": error}
-    out_queue.put(results, timeout=timeout)
-    out_queue.join()
-
-
 class UniDiffuserPipelineFastTests(
     PipelineTesterMixin, PipelineLatentTesterMixin, PipelineKarrasSchedulerTesterMixin, unittest.TestCase
 ):
@@ -85,6 +51,8 @@ class UniDiffuserPipelineFastTests(
     image_params = IMAGE_TO_IMAGE_IMAGE_PARAMS
     # vae_latents, not latents, is the argument that corresponds to VAE latent inputs
     image_latents_params = frozenset(["vae_latents"])
+
+    supports_dduf = False
 
     def get_dummy_components(self):
         unet = UniDiffuserModel.from_pretrained(
@@ -499,20 +467,19 @@ class UniDiffuserPipelineFastTests(
     def test_inference_batch_single_identical(self):
         super().test_inference_batch_single_identical(expected_max_diff=2e-4)
 
-    @require_torch_gpu
-    def test_unidiffuser_default_joint_v1_cuda_fp16(self):
-        device = "cuda"
+    @require_torch_accelerator
+    def test_unidiffuser_default_joint_v1_fp16(self):
         unidiffuser_pipe = UniDiffuserPipeline.from_pretrained(
             "hf-internal-testing/unidiffuser-test-v1", torch_dtype=torch.float16
         )
-        unidiffuser_pipe = unidiffuser_pipe.to(device)
+        unidiffuser_pipe = unidiffuser_pipe.to(torch_device)
         unidiffuser_pipe.set_progress_bar_config(disable=None)
 
         # Set mode to 'joint'
         unidiffuser_pipe.set_joint_mode()
         assert unidiffuser_pipe.mode == "joint"
 
-        inputs = self.get_dummy_inputs_with_latents(device)
+        inputs = self.get_dummy_inputs_with_latents(torch_device)
         # Delete prompt and image for joint inference.
         del inputs["prompt"]
         del inputs["image"]
@@ -529,20 +496,19 @@ class UniDiffuserPipelineFastTests(
         expected_text_prefix = '" This This'
         assert text[0][: len(expected_text_prefix)] == expected_text_prefix
 
-    @require_torch_gpu
-    def test_unidiffuser_default_text2img_v1_cuda_fp16(self):
-        device = "cuda"
+    @require_torch_accelerator
+    def test_unidiffuser_default_text2img_v1_fp16(self):
         unidiffuser_pipe = UniDiffuserPipeline.from_pretrained(
             "hf-internal-testing/unidiffuser-test-v1", torch_dtype=torch.float16
         )
-        unidiffuser_pipe = unidiffuser_pipe.to(device)
+        unidiffuser_pipe = unidiffuser_pipe.to(torch_device)
         unidiffuser_pipe.set_progress_bar_config(disable=None)
 
         # Set mode to 'text2img'
         unidiffuser_pipe.set_text_to_image_mode()
         assert unidiffuser_pipe.mode == "text2img"
 
-        inputs = self.get_dummy_inputs_with_latents(device)
+        inputs = self.get_dummy_inputs_with_latents(torch_device)
         # Delete prompt and image for joint inference.
         del inputs["image"]
         inputs["data_type"] = 1
@@ -554,20 +520,19 @@ class UniDiffuserPipelineFastTests(
         expected_img_slice = np.array([0.5054, 0.5498, 0.5854, 0.3052, 0.4458, 0.6489, 0.5122, 0.4810, 0.6138])
         assert np.abs(image_slice.flatten() - expected_img_slice).max() < 1e-3
 
-    @require_torch_gpu
-    def test_unidiffuser_default_img2text_v1_cuda_fp16(self):
-        device = "cuda"
+    @require_torch_accelerator
+    def test_unidiffuser_default_img2text_v1_fp16(self):
         unidiffuser_pipe = UniDiffuserPipeline.from_pretrained(
             "hf-internal-testing/unidiffuser-test-v1", torch_dtype=torch.float16
         )
-        unidiffuser_pipe = unidiffuser_pipe.to(device)
+        unidiffuser_pipe = unidiffuser_pipe.to(torch_device)
         unidiffuser_pipe.set_progress_bar_config(disable=None)
 
         # Set mode to 'img2text'
         unidiffuser_pipe.set_image_to_text_mode()
         assert unidiffuser_pipe.mode == "img2text"
 
-        inputs = self.get_dummy_inputs_with_latents(device)
+        inputs = self.get_dummy_inputs_with_latents(torch_device)
         # Delete prompt and image for joint inference.
         del inputs["prompt"]
         inputs["data_type"] = 1
@@ -576,19 +541,25 @@ class UniDiffuserPipelineFastTests(
         expected_text_prefix = '" This This'
         assert text[0][: len(expected_text_prefix)] == expected_text_prefix
 
+    @unittest.skip(
+        "Test not supported because it has a bunch of direct configs at init and also, this pipeline isn't used that much now."
+    )
+    def test_encode_prompt_works_in_isolation():
+        pass
+
 
 @nightly
-@require_torch_gpu
+@require_torch_accelerator
 class UniDiffuserPipelineSlowTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def get_inputs(self, device, seed=0, generate_latents=False):
         generator = torch.manual_seed(seed)
@@ -684,32 +655,19 @@ class UniDiffuserPipelineSlowTests(unittest.TestCase):
         expected_text_prefix = "An astronaut"
         assert text[0][: len(expected_text_prefix)] == expected_text_prefix
 
-    @unittest.skip(reason="Skip torch.compile test to speed up the slow test suite.")
-    @require_torch_2
-    def test_unidiffuser_compile(self, seed=0):
-        inputs = self.get_inputs(torch_device, seed=seed, generate_latents=True)
-        # Delete prompt and image for joint inference.
-        del inputs["prompt"]
-        del inputs["image"]
-        # Can't pickle a Generator object
-        del inputs["generator"]
-        inputs["torch_device"] = torch_device
-        inputs["seed"] = seed
-        run_test_in_subprocess(test_case=self, target_func=_test_unidiffuser_compile, inputs=inputs)
-
 
 @nightly
-@require_torch_gpu
+@require_torch_accelerator
 class UniDiffuserPipelineNightlyTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def get_inputs(self, device, seed=0, generate_latents=False):
         generator = torch.manual_seed(seed)

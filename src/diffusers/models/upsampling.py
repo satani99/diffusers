@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..utils import deprecate
+from ..utils.import_utils import is_torch_version
 from .normalization import RMSNorm
 
 
@@ -151,11 +152,10 @@ class Upsample2D(nn.Module):
         if self.use_conv_transpose:
             return self.conv(hidden_states)
 
-        # Cast to float32 to as 'upsample_nearest2d_out_frame' op does not support bfloat16
-        # TODO(Suraj): Remove this cast once the issue is fixed in PyTorch
-        # https://github.com/pytorch/pytorch/issues/86679
+        # Cast to float32 to as 'upsample_nearest2d_out_frame' op does not support bfloat16 until PyTorch 2.1
+        # https://github.com/pytorch/pytorch/issues/86679#issuecomment-1783978767
         dtype = hidden_states.dtype
-        if dtype == torch.bfloat16:
+        if dtype == torch.bfloat16 and is_torch_version("<", "2.1"):
             hidden_states = hidden_states.to(torch.float32)
 
         # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
@@ -165,13 +165,21 @@ class Upsample2D(nn.Module):
         # if `output_size` is passed we force the interpolation output
         # size and do not make use of `scale_factor=2`
         if self.interpolate:
+            # upsample_nearest_nhwc also fails when the number of output elements is large
+            # https://github.com/pytorch/pytorch/issues/141831
+            scale_factor = (
+                2 if output_size is None else max([f / s for f, s in zip(output_size, hidden_states.shape[-2:])])
+            )
+            if hidden_states.numel() * scale_factor > pow(2, 31):
+                hidden_states = hidden_states.contiguous()
+
             if output_size is None:
                 hidden_states = F.interpolate(hidden_states, scale_factor=2.0, mode="nearest")
             else:
                 hidden_states = F.interpolate(hidden_states, size=output_size, mode="nearest")
 
-        # If the input is bfloat16, we cast back to bfloat16
-        if dtype == torch.bfloat16:
+        # Cast back to original dtype
+        if dtype == torch.bfloat16 and is_torch_version("<", "2.1"):
             hidden_states = hidden_states.to(dtype)
 
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed
@@ -350,7 +358,7 @@ class KUpsample2D(nn.Module):
 
 class CogVideoXUpsample3D(nn.Module):
     r"""
-    A 3D Upsample layer using in CogVideoX by Tsinghua University & ZhipuAI # Todo: Wait for paper relase.
+    A 3D Upsample layer using in CogVideoX by Tsinghua University & ZhipuAI # Todo: Wait for paper release.
 
     Args:
         in_channels (`int`):

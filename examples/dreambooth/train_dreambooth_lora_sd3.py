@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import numpy as np
 import torch
 import torch.utils.checkpoint
 import transformers
-from accelerate import Accelerator
+from accelerate import Accelerator, DistributedType
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
@@ -55,9 +55,9 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
     _set_state_dict_into_text_encoder,
     cast_training_params,
-    clear_objs_and_retain_memory,
     compute_density_for_timestep_sampling,
     compute_loss_weighting_for_sd3,
+    free_memory,
 )
 from diffusers.utils import (
     check_min_version,
@@ -72,7 +72,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.31.0.dev0")
+check_min_version("0.34.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -86,6 +86,15 @@ def save_model_card(
     validation_prompt=None,
     repo_folder=None,
 ):
+    if "large" in base_model:
+        model_variant = "SD3.5-Large"
+        license_url = "https://huggingface.co/stabilityai/stable-diffusion-3.5-large/blob/main/LICENSE.md"
+        variant_tags = ["sd3.5-large", "sd3.5", "sd3.5-diffusers"]
+    else:
+        model_variant = "SD3"
+        license_url = "https://huggingface.co/stabilityai/stable-diffusion-3-medium/blob/main/LICENSE.md"
+        variant_tags = ["sd3", "sd3-diffusers"]
+
     widget_dict = []
     if images is not None:
         for i, image in enumerate(images):
@@ -95,7 +104,7 @@ def save_model_card(
             )
 
     model_description = f"""
-# SD3 DreamBooth LoRA - {repo_id}
+# {model_variant} DreamBooth LoRA - {repo_id}
 
 <Gallery />
 
@@ -120,7 +129,7 @@ You should use `{instance_prompt}` to trigger the image generation.
 ```py
 from diffusers import AutoPipelineForText2Image
 import torch
-pipeline = AutoPipelineForText2Image.from_pretrained('stabilityai/stable-diffusion-3-medium-diffusers', torch_dtype=torch.float16).to('cuda')
+pipeline = AutoPipelineForText2Image.from_pretrained({base_model}, torch_dtype=torch.float16).to('cuda')
 pipeline.load_lora_weights('{repo_id}', weight_name='pytorch_lora_weights.safetensors')
 image = pipeline('{validation_prompt if validation_prompt else instance_prompt}').images[0]
 ```
@@ -135,12 +144,12 @@ For more details, including weighting, merging and fusing LoRAs, check the [docu
 
 ## License
 
-Please adhere to the licensing terms as described [here](https://huggingface.co/stabilityai/stable-diffusion-3-medium/blob/main/LICENSE).
+Please adhere to the licensing terms as described [here]({license_url}).
 """
     model_card = load_or_create_model_card(
         repo_id_or_path=repo_id,
         from_training=True,
-        license="openrail++",
+        license="other",
         base_model=base_model,
         prompt=instance_prompt,
         model_description=model_description,
@@ -151,10 +160,10 @@ Please adhere to the licensing terms as described [here](https://huggingface.co/
         "diffusers-training",
         "diffusers",
         "lora",
-        "sd3",
-        "sd3-diffusers",
         "template:sd-lora",
     ]
+
+    tags += variant_tags
 
     model_card = populate_model_card(model_card, tags=tags)
     model_card.save(os.path.join(repo_folder, "README.md"))
@@ -179,6 +188,7 @@ def log_validation(
     accelerator,
     pipeline_args,
     epoch,
+    torch_dtype,
     is_final_validation=False,
 ):
     logger.info(
@@ -189,7 +199,7 @@ def log_validation(
     pipeline.set_progress_bar_config(disable=True)
 
     # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
+    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
     # autocast_ctx = torch.autocast(accelerator.device.type) if not is_final_validation else nullcontext()
     autocast_ctx = nullcontext()
 
@@ -210,7 +220,8 @@ def log_validation(
                 }
             )
 
-    clear_objs_and_retain_memory(objs=[pipeline])
+    del pipeline
+    free_memory()
 
     return images
 
@@ -356,6 +367,9 @@ def parse_args(input_args=None):
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
+
+    parser.add_argument("--lora_dropout", type=float, default=0.0, help="Dropout probability for LoRA layers")
+
     parser.add_argument(
         "--with_prior_preservation",
         default=False,
@@ -561,6 +575,25 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument(
+        "--lora_layers",
+        type=str,
+        default=None,
+        help=(
+            "The transformer block layers to apply LoRA training on. Please specify the layers in a comma separated string."
+            "For examples refer to https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_SD3.md"
+        ),
+    )
+    parser.add_argument(
+        "--lora_blocks",
+        type=str,
+        default=None,
+        help=(
+            "The transformer blocks to apply LoRA training on. Please specify the block numbers in a comma separated manner."
+            'E.g. - "--lora_blocks 12,30" will result in lora training of transformer blocks 12 and 30. For more examples refer to https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_SD3.md'
+        ),
+    )
+
+    parser.add_argument(
         "--adam_epsilon",
         type=float,
         default=1e-08,
@@ -607,6 +640,12 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--cache_latents",
+        action="store_true",
+        default=False,
+        help="Cache the VAE latents",
+    )
+    parser.add_argument(
         "--report_to",
         type=str,
         default="tensorboard",
@@ -624,6 +663,15 @@ def parse_args(input_args=None):
             "Whether to use mixed precision. Choose between fp16 and bf16 (bfloat16). Bf16 requires PyTorch >="
             " 1.10.and an Nvidia Ampere GPU.  Default to the value of accelerate config of the current system or the"
             " flag passed with the `accelerate.launch` command. Use this argument to override the accelerate config."
+        ),
+    )
+    parser.add_argument(
+        "--upcast_before_saving",
+        action="store_true",
+        default=False,
+        help=(
+            "Whether to upcast the trained transformer layers to float32 before saving (at the end of training). "
+            "Defaults to precision dtype used for training to save memory"
         ),
     )
     parser.add_argument(
@@ -1105,7 +1153,8 @@ def main(args):
                     image_filename = class_images_dir / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
                     image.save(image_filename)
 
-            clear_objs_and_retain_memory(objs=[pipeline])
+            del pipeline
+            free_memory()
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -1195,13 +1244,32 @@ def main(args):
         if args.train_text_encoder:
             text_encoder_one.gradient_checkpointing_enable()
             text_encoder_two.gradient_checkpointing_enable()
+    if args.lora_layers is not None:
+        target_modules = [layer.strip() for layer in args.lora_layers.split(",")]
+    else:
+        target_modules = [
+            "attn.add_k_proj",
+            "attn.add_q_proj",
+            "attn.add_v_proj",
+            "attn.to_add_out",
+            "attn.to_k",
+            "attn.to_out.0",
+            "attn.to_q",
+            "attn.to_v",
+        ]
+    if args.lora_blocks is not None:
+        target_blocks = [int(block.strip()) for block in args.lora_blocks.split(",")]
+        target_modules = [
+            f"transformer_blocks.{block}.{module}" for block in target_blocks for module in target_modules
+        ]
 
     # now we will add new LoRA weights to the attention layers
     transformer_lora_config = LoraConfig(
         r=args.rank,
         lora_alpha=args.rank,
+        lora_dropout=args.lora_dropout,
         init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        target_modules=target_modules,
     )
     transformer.add_adapter(transformer_lora_config)
 
@@ -1209,6 +1277,7 @@ def main(args):
         text_lora_config = LoraConfig(
             r=args.rank,
             lora_alpha=args.rank,
+            lora_dropout=args.lora_dropout,
             init_lora_weights="gaussian",
             target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
         )
@@ -1228,17 +1297,27 @@ def main(args):
             text_encoder_two_lora_layers_to_save = None
 
             for model in models:
-                if isinstance(model, type(unwrap_model(transformer))):
+                if isinstance(unwrap_model(model), type(unwrap_model(transformer))):
+                    model = unwrap_model(model)
+                    if args.upcast_before_saving:
+                        model = model.to(torch.float32)
                     transformer_lora_layers_to_save = get_peft_model_state_dict(model)
-                elif isinstance(model, type(unwrap_model(text_encoder_one))):
-                    text_encoder_one_lora_layers_to_save = get_peft_model_state_dict(model)
-                elif isinstance(model, type(unwrap_model(text_encoder_two))):
-                    text_encoder_two_lora_layers_to_save = get_peft_model_state_dict(model)
+                elif args.train_text_encoder and isinstance(
+                    unwrap_model(model), type(unwrap_model(text_encoder_one))
+                ):  # or text_encoder_two
+                    # both text encoders are of the same class, so we check hidden size to distinguish between the two
+                    model = unwrap_model(model)
+                    hidden_size = model.config.hidden_size
+                    if hidden_size == 768:
+                        text_encoder_one_lora_layers_to_save = get_peft_model_state_dict(model)
+                    elif hidden_size == 1280:
+                        text_encoder_two_lora_layers_to_save = get_peft_model_state_dict(model)
                 else:
                     raise ValueError(f"unexpected save model: {model.__class__}")
 
                 # make sure to pop weight so that corresponding model is not saved again
-                weights.pop()
+                if weights:
+                    weights.pop()
 
             StableDiffusion3Pipeline.save_lora_weights(
                 output_dir,
@@ -1252,22 +1331,36 @@ def main(args):
         text_encoder_one_ = None
         text_encoder_two_ = None
 
-        while len(models) > 0:
-            model = models.pop()
+        if not accelerator.distributed_type == DistributedType.DEEPSPEED:
+            while len(models) > 0:
+                model = models.pop()
 
-            if isinstance(model, type(unwrap_model(transformer))):
-                transformer_ = model
-            elif isinstance(model, type(unwrap_model(text_encoder_one))):
-                text_encoder_one_ = model
-            elif isinstance(model, type(unwrap_model(text_encoder_two))):
-                text_encoder_two_ = model
-            else:
-                raise ValueError(f"unexpected save model: {model.__class__}")
+                if isinstance(unwrap_model(model), type(unwrap_model(transformer))):
+                    transformer_ = unwrap_model(model)
+                elif isinstance(unwrap_model(model), type(unwrap_model(text_encoder_one))):
+                    text_encoder_one_ = unwrap_model(model)
+                elif isinstance(unwrap_model(model), type(unwrap_model(text_encoder_two))):
+                    text_encoder_two_ = unwrap_model(model)
+                else:
+                    raise ValueError(f"unexpected save model: {model.__class__}")
+
+        else:
+            transformer_ = SD3Transformer2DModel.from_pretrained(
+                args.pretrained_model_name_or_path, subfolder="transformer"
+            )
+            transformer_.add_adapter(transformer_lora_config)
+            if args.train_text_encoder:
+                text_encoder_one_ = text_encoder_cls_one.from_pretrained(
+                    args.pretrained_model_name_or_path, subfolder="text_encoder"
+                )
+                text_encoder_two_ = text_encoder_cls_two.from_pretrained(
+                    args.pretrained_model_name_or_path, subfolder="text_encoder_2"
+                )
 
         lora_state_dict = StableDiffusion3Pipeline.lora_state_dict(input_dir)
 
         transformer_state_dict = {
-            f'{k.replace("transformer.", "")}': v for k, v in lora_state_dict.items() if k.startswith("transformer.")
+            f"{k.replace('transformer.', '')}": v for k, v in lora_state_dict.items() if k.startswith("transformer.")
         }
         transformer_state_dict = convert_unet_state_dict_to_peft(transformer_state_dict)
         incompatible_keys = set_peft_model_state_dict(transformer_, transformer_state_dict, adapter_name="default")
@@ -1391,10 +1484,19 @@ def main(args):
             logger.warning(
                 "Learning rate is too low. When using prodigy, it's generally better to set learning rate around 1.0"
             )
+        if args.train_text_encoder and args.text_encoder_lr:
+            logger.warning(
+                f"Learning rates were provided both for the transformer and the text encoder- e.g. text_encoder_lr:"
+                f" {args.text_encoder_lr} and learning_rate: {args.learning_rate}. "
+                f"When using prodigy only learning_rate is used as the initial learning rate."
+            )
+            # changes the learning rate of text_encoder_parameters_one and text_encoder_parameters_two to be
+            # --learning_rate
+            params_to_optimize[1]["lr"] = args.learning_rate
+            params_to_optimize[2]["lr"] = args.learning_rate
 
         optimizer = optimizer_class(
             params_to_optimize,
-            lr=args.learning_rate,
             betas=(args.adam_beta1, args.adam_beta2),
             beta3=args.prodigy_beta3,
             weight_decay=args.adam_weight_decay,
@@ -1437,6 +1539,9 @@ def main(args):
                 pooled_prompt_embeds = pooled_prompt_embeds.to(accelerator.device)
             return prompt_embeds, pooled_prompt_embeds
 
+    # If no type of tuning is done on the text_encoder and custom instance prompts are NOT
+    # provided (i.e. the --instance_prompt is used for all images), we encode the instance prompt once to avoid
+    # the redundant encoding.
     if not args.train_text_encoder and not train_dataset.custom_instance_prompts:
         instance_prompt_hidden_states, instance_pooled_prompt_embeds = compute_text_embeddings(
             args.instance_prompt, text_encoders, tokenizers
@@ -1452,9 +1557,9 @@ def main(args):
     # Clear the memory here
     if not args.train_text_encoder and not train_dataset.custom_instance_prompts:
         # Explicitly delete the objects as well, otherwise only the lists are deleted and the original references remain, preventing garbage collection
-        clear_objs_and_retain_memory(
-            objs=[tokenizers, text_encoders, text_encoder_one, text_encoder_two, text_encoder_three]
-        )
+        del tokenizers, text_encoders
+        del text_encoder_one, text_encoder_two, text_encoder_three
+        free_memory()
 
     # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
     # pack the statically computed variables appropriately here. This is so that we don't
@@ -1481,6 +1586,21 @@ def main(args):
                 tokens_two = torch.cat([tokens_two, class_tokens_two], dim=0)
                 tokens_three = torch.cat([tokens_three, class_tokens_three], dim=0)
 
+    vae_config_shift_factor = vae.config.shift_factor
+    vae_config_scaling_factor = vae.config.scaling_factor
+    if args.cache_latents:
+        latents_cache = []
+        for batch in tqdm(train_dataloader, desc="Caching latents"):
+            with torch.no_grad():
+                batch["pixel_values"] = batch["pixel_values"].to(
+                    accelerator.device, non_blocking=True, dtype=weight_dtype
+                )
+                latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
+
+        if args.validation_prompt is None:
+            del vae
+            free_memory()
+
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1497,7 +1617,6 @@ def main(args):
         power=args.lr_power,
     )
 
-    # Prepare everything with our `accelerator`.
     # Prepare everything with our `accelerator`.
     if args.train_text_encoder:
         (
@@ -1604,8 +1723,9 @@ def main(args):
 
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
+            if args.train_text_encoder:
+                models_to_accumulate.extend([text_encoder_one, text_encoder_two])
             with accelerator.accumulate(models_to_accumulate):
-                pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
                 prompts = batch["prompts"]
 
                 # encode batch prompts when custom prompts are provided for each image -
@@ -1636,8 +1756,13 @@ def main(args):
                         )
 
                 # Convert images to latent space
-                model_input = vae.encode(pixel_values).latent_dist.sample()
-                model_input = (model_input - vae.config.shift_factor) * vae.config.scaling_factor
+                if args.cache_latents:
+                    model_input = latents_cache[step].sample()
+                else:
+                    pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
+                    model_input = vae.encode(pixel_values).latent_dist.sample()
+
+                model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
                 model_input = model_input.to(dtype=weight_dtype)
 
                 # Sample noise that we'll add to the latents
@@ -1670,7 +1795,7 @@ def main(args):
                     return_dict=False,
                 )[0]
 
-                # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
+                # Follow: Section 5 of https://huggingface.co/papers/2206.00364.
                 # Preconditioning of the model outputs.
                 if args.precondition_outputs:
                     model_pred = model_pred * (-sigmas) + noisy_model_input
@@ -1730,7 +1855,7 @@ def main(args):
                 progress_bar.update(1)
                 global_step += 1
 
-                if accelerator.is_main_process:
+                if accelerator.is_main_process or accelerator.distributed_type == DistributedType.DEEPSPEED:
                     if global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
@@ -1770,6 +1895,8 @@ def main(args):
                     text_encoder_one, text_encoder_two, text_encoder_three = load_text_encoders(
                         text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
                     )
+                    text_encoder_one.to(weight_dtype)
+                    text_encoder_two.to(weight_dtype)
                 pipeline = StableDiffusion3Pipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     vae=vae,
@@ -1788,18 +1915,20 @@ def main(args):
                     accelerator=accelerator,
                     pipeline_args=pipeline_args,
                     epoch=epoch,
+                    torch_dtype=weight_dtype,
                 )
-                objs = []
                 if not args.train_text_encoder:
-                    objs.extend([text_encoder_one, text_encoder_two, text_encoder_three])
-
-                clear_objs_and_retain_memory(objs=objs)
+                    del text_encoder_one, text_encoder_two, text_encoder_three
+                    free_memory()
 
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         transformer = unwrap_model(transformer)
-        transformer = transformer.to(torch.float32)
+        if args.upcast_before_saving:
+            transformer.to(torch.float32)
+        else:
+            transformer = transformer.to(weight_dtype)
         transformer_lora_layers = get_peft_model_state_dict(transformer)
 
         if args.train_text_encoder:
@@ -1840,6 +1969,7 @@ def main(args):
                 pipeline_args=pipeline_args,
                 epoch=epoch,
                 is_final_validation=True,
+                torch_dtype=weight_dtype,
             )
 
         if args.push_to_hub:

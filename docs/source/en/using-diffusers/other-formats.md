@@ -37,7 +37,7 @@ Make sure you have the [Safetensors](https://hf.co/docs/safetensors) library ins
 
 Safetensors stores weights in a safetensors file. Diffusers loads safetensors files by default if they're available and the Safetensors library is installed. There are two ways safetensors files can be organized:
 
-1. Diffusers-multifolder layout: there may be several separate safetensors files, one for each pipeline component (text encoder, UNet, VAE), organized in subfolders (check out the [runwayml/stable-diffusion-v1-5](https://hf.co/runwayml/stable-diffusion-v1-5/tree/main) repository as an example)
+1. Diffusers-multifolder layout: there may be several separate safetensors files, one for each pipeline component (text encoder, UNet, VAE), organized in subfolders (check out the [stable-diffusion-v1-5/stable-diffusion-v1-5](https://hf.co/stable-diffusion-v1-5/stable-diffusion-v1-5/tree/main) repository as an example)
 2. single-file layout: all the model weights may be saved in a single file (check out the [WarriorMama777/OrangeMixs](https://hf.co/WarriorMama777/OrangeMixs/tree/main/Models/AbyssOrangeMix) repository as an example)
 
 <hfoptions id="safetensors">
@@ -49,7 +49,7 @@ Use the [`~DiffusionPipeline.from_pretrained`] method to load a model with safet
 from diffusers import DiffusionPipeline
 
 pipeline = DiffusionPipeline.from_pretrained(
-    "runwayml/stable-diffusion-v1-5",
+    "stable-diffusion-v1-5/stable-diffusion-v1-5",
     use_safetensors=True
 )
 ```
@@ -118,7 +118,7 @@ Use the [`~loaders.FromSingleFileMixin.from_single_file`] method to directly loa
 from diffusers import StableDiffusionPipeline
 
 pipeline = StableDiffusionPipeline.from_single_file(
-    "https://huggingface.co/runwayml/stable-diffusion-v1-5/blob/main/v1-5-pruned.ckpt"
+    "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/v1-5-pruned.ckpt"
 )
 ```
 
@@ -240,6 +240,46 @@ Benefits of using a single-file layout include:
 1. Easy compatibility with diffusion interfaces such as [ComfyUI](https://github.com/comfyanonymous/ComfyUI) or [Automatic1111](https://github.com/AUTOMATIC1111/stable-diffusion-webui) which commonly use a single-file layout.
 2. Easier to manage (download and share) a single file.
 
+### DDUF
+
+> [!WARNING]
+> DDUF is an experimental file format and APIs related to it can change in the future.
+
+DDUF (**D**DUF **D**iffusion **U**nified **F**ormat) is a file format designed to make storing, distributing, and using diffusion models much easier. Built on the ZIP file format, DDUF offers a standardized, efficient, and flexible way to package all parts of a diffusion model into a single, easy-to-manage file. It provides a balance between Diffusers multi-folder format and the widely popular single-file format.
+
+Learn more details about DDUF on the Hugging Face Hub [documentation](https://huggingface.co/docs/hub/dduf).
+
+Pass a checkpoint to the `dduf_file` parameter to load it in [`DiffusionPipeline`].
+
+```py
+from diffusers import DiffusionPipeline
+import torch
+
+pipe = DiffusionPipeline.from_pretrained(
+    "DDUF/FLUX.1-dev-DDUF", dduf_file="FLUX.1-dev.dduf", torch_dtype=torch.bfloat16
+).to("cuda")
+image = pipe(
+    "photo a cat holding a sign that says Diffusers", num_inference_steps=50, guidance_scale=3.5
+).images[0]
+image.save("cat.png")
+```
+
+To save a pipeline as a `.dduf` checkpoint, use the [`~huggingface_hub.export_folder_as_dduf`] utility, which takes care of all the necessary file-level validations.
+
+```py
+from huggingface_hub import export_folder_as_dduf
+from diffusers import DiffusionPipeline
+import torch 
+
+pipe = DiffusionPipeline.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=torch.bfloat16)
+
+save_folder = "flux-dev"
+pipe.save_pretrained("flux-dev")
+export_folder_as_dduf("flux-dev.dduf", folder_path=save_folder)
+
+> [!TIP]
+> Packaging and loading quantized checkpoints in the DDUF format is supported as long as they respect the multi-folder structure.
+
 ## Convert layout and files
 
 Diffusers provides many scripts and methods to convert storage layouts and file formats to enable broader support across the diffusion ecosystem.
@@ -314,7 +354,7 @@ Or you could use a ControlNet model in the pipeline.
 ```py
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
 
-ckpt_path = "https://huggingface.co/runwayml/stable-diffusion-v1-5/blob/main/v1-5-pruned-emaonly.safetensors"
+ckpt_path = "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/v1-5-pruned-emaonly.safetensors"
 controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_canny")
 pipeline = StableDiffusionControlNetPipeline.from_single_file(ckpt_path, controlnet=controlnet)
 ```

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 The HuggingFace Inc. team.
+# Copyright 2025 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -154,12 +154,30 @@ def check_imports(filename):
     return get_relative_imports(filename)
 
 
-def get_class_in_module(class_name, module_path):
+def get_class_in_module(class_name, module_path, pretrained_model_name_or_path=None):
     """
     Import a module on the cache directory for modules and extract a class from it.
     """
     module_path = module_path.replace(os.path.sep, ".")
-    module = importlib.import_module(module_path)
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError as e:
+        # This can happen when the repo id contains ".", which Python's import machinery interprets as a directory
+        # separator. We do a bit of monkey patching to detect and fix this case.
+        if not (
+            pretrained_model_name_or_path is not None
+            and "." in pretrained_model_name_or_path
+            and module_path.startswith("diffusers_modules")
+            and pretrained_model_name_or_path.replace("/", "--") in module_path
+        ):
+            raise e  # We can't figure this one out, just reraise the original error
+
+        corrected_path = os.path.join(HF_MODULES_CACHE, module_path.replace(".", "/")) + ".py"
+        corrected_path = corrected_path.replace(
+            pretrained_model_name_or_path.replace("/", "--").replace(".", "/"),
+            pretrained_model_name_or_path.replace("/", "--"),
+        )
+        module = importlib.machinery.SourceFileLoader(module_path, corrected_path).load_module()
 
     if class_name is None:
         return find_pipeline_class(module)
@@ -325,7 +343,7 @@ def get_cached_module_file(
         # We always copy local files (we could hash the file to see if there was a change, and give them the name of
         # that hash, to only copy when there is a modification but it seems overkill for now).
         # The only reason we do the copy is to avoid putting too many folders in sys.path.
-        shutil.copy(resolved_module_file, submodule_path / module_file)
+        shutil.copyfile(resolved_module_file, submodule_path / module_file)
         for module_needed in modules_needed:
             if len(module_needed.split(".")) == 2:
                 module_needed = "/".join(module_needed.split("."))
@@ -333,7 +351,7 @@ def get_cached_module_file(
                 if not os.path.exists(submodule_path / module_folder):
                     os.makedirs(submodule_path / module_folder)
             module_needed = f"{module_needed}.py"
-            shutil.copy(os.path.join(pretrained_model_name_or_path, module_needed), submodule_path / module_needed)
+            shutil.copyfile(os.path.join(pretrained_model_name_or_path, module_needed), submodule_path / module_needed)
     else:
         # Get the commit hash
         # TODO: we will get this info in the etag soon, so retrieve it from there and not here.
@@ -350,7 +368,7 @@ def get_cached_module_file(
                 module_folder = module_file.split("/")[0]
                 if not os.path.exists(submodule_path / module_folder):
                     os.makedirs(submodule_path / module_folder)
-            shutil.copy(resolved_module_file, submodule_path / module_file)
+            shutil.copyfile(resolved_module_file, submodule_path / module_file)
 
         # Make sure we also have every file with relative
         for module_needed in modules_needed:
@@ -454,4 +472,4 @@ def get_class_from_dynamic_module(
         revision=revision,
         local_files_only=local_files_only,
     )
-    return get_class_in_module(class_name, final_module.replace(".py", ""))
+    return get_class_in_module(class_name, final_module.replace(".py", ""), pretrained_model_name_or_path)

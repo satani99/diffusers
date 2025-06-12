@@ -87,7 +87,7 @@ Lastly, if you want to train a model on your own dataset, take a look at the [Cr
 
 <Tip>
 
-The following sections highlight parts of the training script that are important for understanding how to modify it, but it doesn't cover every aspect of the script in detail. If you're interested in learning more, feel free to read through the [script](https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/text_to_image_lora.py) and let us know if you have any questions or concerns.
+The following sections highlight parts of the training script that are important for understanding how to modify it, but it doesn't cover every aspect of the script in detail. If you're interested in learning more, feel free to read through the [script](https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image_lora.py) and let us know if you have any questions or concerns.
 
 </Tip>
 
@@ -184,7 +184,7 @@ A full training run takes ~5 hours on a 2080 Ti GPU with 11GB of VRAM.
 </Tip>
 
 ```bash
-export MODEL_NAME="runwayml/stable-diffusion-v1-5"
+export MODEL_NAME="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="/sddata/finetune/lora/naruto"
 export HUB_MODEL_ID="naruto-lora"
 export DATASET_NAME="lambdalabs/naruto-blip-captions"
@@ -218,7 +218,7 @@ Once training has been completed, you can use your model for inference:
 from diffusers import AutoPipelineForText2Image
 import torch
 
-pipeline = AutoPipelineForText2Image.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16).to("cuda")
+pipeline = AutoPipelineForText2Image.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5", torch_dtype=torch.float16).to("cuda")
 pipeline.load_lora_weights("path/to/lora/model", weight_name="pytorch_lora_weights.safetensors")
 image = pipeline("A naruto with blue eyes").images[0]
 ```

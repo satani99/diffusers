@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ import argparse
 import contextlib
 import copy
 import functools
+import gc
 import logging
 import math
 import os
@@ -31,7 +32,7 @@ import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
@@ -49,13 +50,10 @@ from diffusers import (
     StableDiffusion3ControlNetPipeline,
 )
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import (
-    clear_objs_and_retain_memory,
-    compute_density_for_timestep_sampling,
-    compute_loss_weighting_for_sd3,
-)
-from diffusers.utils import check_min_version, is_wandb_available
+from diffusers.training_utils import compute_density_for_timestep_sampling, compute_loss_weighting_for_sd3, free_memory
+from diffusers.utils import check_min_version, is_wandb_available, make_image_grid
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
+from diffusers.utils.testing_utils import backend_empty_cache
 from diffusers.utils.torch_utils import is_compiled_module
 
 
@@ -63,20 +61,9 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.30.0.dev0")
+check_min_version("0.34.0.dev0")
 
 logger = get_logger(__name__)
-
-
-def image_grid(imgs, rows, cols):
-    assert len(imgs) == rows * cols
-
-    w, h = imgs[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-
-    for i, img in enumerate(imgs):
-        grid.paste(img, box=(i % cols * w, i // cols * h))
-    return grid
 
 
 def log_validation(controlnet, args, accelerator, weight_dtype, step, is_final_validation=False):
@@ -89,8 +76,9 @@ def log_validation(controlnet, args, accelerator, weight_dtype, step, is_final_v
 
     pipeline = StableDiffusion3ControlNetPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
-        controlnet=controlnet,
+        controlnet=None,
         safety_checker=None,
+        transformer=None,
         revision=args.revision,
         variant=args.variant,
         torch_dtype=weight_dtype,
@@ -117,18 +105,55 @@ def log_validation(controlnet, args, accelerator, weight_dtype, step, is_final_v
             "number of `args.validation_image` and `args.validation_prompt` should be checked in `parse_args`"
         )
 
+    with torch.no_grad():
+        (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+        ) = pipeline.encode_prompt(
+            validation_prompts,
+            prompt_2=None,
+            prompt_3=None,
+        )
+
+    del pipeline
+    gc.collect()
+    backend_empty_cache(accelerator.device.type)
+
+    pipeline = StableDiffusion3ControlNetPipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        controlnet=controlnet,
+        safety_checker=None,
+        text_encoder=None,
+        text_encoder_2=None,
+        text_encoder_3=None,
+        revision=args.revision,
+        variant=args.variant,
+        torch_dtype=weight_dtype,
+    )
+    pipeline.enable_model_cpu_offload(device=accelerator.device.type)
+    pipeline.set_progress_bar_config(disable=True)
+
     image_logs = []
     inference_ctx = contextlib.nullcontext() if is_final_validation else torch.autocast(accelerator.device.type)
 
-    for validation_prompt, validation_image in zip(validation_prompts, validation_images):
+    for i, validation_image in enumerate(validation_images):
         validation_image = Image.open(validation_image).convert("RGB")
+        validation_prompt = validation_prompts[i]
 
         images = []
 
         for _ in range(args.num_validation_images):
             with inference_ctx:
                 image = pipeline(
-                    validation_prompt, control_image=validation_image, num_inference_steps=20, generator=generator
+                    prompt_embeds=prompt_embeds[i].unsqueeze(0),
+                    negative_prompt_embeds=negative_prompt_embeds[i].unsqueeze(0),
+                    pooled_prompt_embeds=pooled_prompt_embeds[i].unsqueeze(0),
+                    negative_pooled_prompt_embeds=negative_pooled_prompt_embeds[i].unsqueeze(0),
+                    control_image=validation_image,
+                    num_inference_steps=20,
+                    generator=generator,
                 ).images[0]
 
             images.append(image)
@@ -174,12 +199,13 @@ def log_validation(controlnet, args, accelerator, weight_dtype, step, is_final_v
         else:
             logger.warning(f"image logging not implemented for {tracker.name}")
 
-        clear_objs_and_retain_memory(pipeline)
+    del pipeline
+    free_memory()
 
-        if not is_final_validation:
-            controlnet.to(accelerator.device)
+    if not is_final_validation:
+        controlnet.to(accelerator.device)
 
-        return image_logs
+    return image_logs
 
 
 # Copied from dreambooth sd3 example
@@ -227,7 +253,7 @@ def save_model_card(repo_id: str, image_logs=None, base_model=str, repo_folder=N
             validation_image.save(os.path.join(repo_folder, "image_control.png"))
             img_str += f"prompt: {validation_prompt}\n"
             images = [validation_image] + images
-            image_grid(images, 1, len(images)).save(os.path.join(repo_folder, f"images_{i}.png"))
+            make_image_grid(images, 1, len(images)).save(os.path.join(repo_folder, f"images_{i}.png"))
             img_str += f"![images_{i})](./images_{i}.png)\n"
 
     model_description = f"""
@@ -276,6 +302,12 @@ def parse_args(input_args=None):
         default=None,
         help="Path to pretrained controlnet model or model identifier from huggingface.co/models."
         " If not specified controlnet weights are initialized from unet.",
+    )
+    parser.add_argument(
+        "--num_extra_conditioning_channels",
+        type=int,
+        default=0,
+        help="Number of extra conditioning channels for controlnet.",
     )
     parser.add_argument(
         "--revision",
@@ -359,6 +391,11 @@ def parse_args(input_args=None):
         "--gradient_checkpointing",
         action="store_true",
         help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
+    )
+    parser.add_argument(
+        "--upcast_vae",
+        action="store_true",
+        help="Whether or not to upcast vae to fp32",
     )
     parser.add_argument(
         "--learning_rate",
@@ -549,6 +586,9 @@ def parse_args(input_args=None):
         help="Maximum sequence length to use with with the T5 text encoder",
     )
     parser.add_argument(
+        "--dataset_preprocess_batch_size", type=int, default=1000, help="Batch size for preprocessing dataset."
+    )
+    parser.add_argument(
         "--validation_prompt",
         type=str,
         default=None,
@@ -655,6 +695,7 @@ def make_train_dataset(args, tokenizer_one, tokenizer_two, tokenizer_three, acce
             dataset = load_dataset(
                 args.train_data_dir,
                 cache_dir=args.cache_dir,
+                trust_remote_code=True,
             )
         # See more about loading custom images at
         # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
@@ -899,12 +940,13 @@ def main(args):
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
-
+    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        kwargs_handlers=[kwargs],
     )
 
     # Disable AMP for MPS.
@@ -994,7 +1036,9 @@ def main(args):
         controlnet = SD3ControlNetModel.from_pretrained(args.controlnet_model_name_or_path)
     else:
         logger.info("Initializing controlnet weights from transformer")
-        controlnet = SD3ControlNetModel.from_transformer(transformer)
+        controlnet = SD3ControlNetModel.from_transformer(
+            transformer, num_extra_conditioning_channels=args.num_extra_conditioning_channels
+        )
 
     transformer.requires_grad_(False)
     vae.requires_grad_(False)
@@ -1096,7 +1140,10 @@ def main(args):
         weight_dtype = torch.bfloat16
 
     # Move vae, transformer and text_encoder to device and cast to weight_dtype
-    vae.to(accelerator.device, dtype=torch.float32)
+    if args.upcast_vae:
+        vae.to(accelerator.device, dtype=torch.float32)
+    else:
+        vae.to(accelerator.device, dtype=weight_dtype)
     transformer.to(accelerator.device, dtype=weight_dtype)
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
@@ -1128,9 +1175,16 @@ def main(args):
         # fingerprint used by the cache for the other processes to load the result
         # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
         new_fingerprint = Hasher.hash(args)
-        train_dataset = train_dataset.map(compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint)
+        train_dataset = train_dataset.map(
+            compute_embeddings_fn,
+            batched=True,
+            batch_size=args.dataset_preprocess_batch_size,
+            new_fingerprint=new_fingerprint,
+        )
 
-    clear_objs_and_retain_memory(text_encoders + tokenizers)
+    del text_encoder_one, text_encoder_two, text_encoder_three
+    del tokenizer_one, tokenizer_two, tokenizer_three
+    free_memory()
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -1270,8 +1324,8 @@ def main(args):
                 noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
                 # Get the text embedding for conditioning
-                prompt_embeds = batch["prompt_embeds"]
-                pooled_prompt_embeds = batch["pooled_prompt_embeds"]
+                prompt_embeds = batch["prompt_embeds"].to(dtype=weight_dtype)
+                pooled_prompt_embeds = batch["pooled_prompt_embeds"].to(dtype=weight_dtype)
 
                 # controlnet(s) inference
                 controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
@@ -1298,7 +1352,7 @@ def main(args):
                     return_dict=False,
                 )[0]
 
-                # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
+                # Follow: Section 5 of https://huggingface.co/papers/2206.00364.
                 # Preconditioning of the model outputs.
                 if args.precondition_outputs:
                     model_pred = model_pred * (-sigmas) + noisy_model_input

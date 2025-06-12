@@ -1,6 +1,6 @@
 # ControlNet training example
 
-[Adding Conditional Control to Text-to-Image Diffusion Models](https://arxiv.org/abs/2302.05543) by Lvmin Zhang and Maneesh Agrawala.
+[Adding Conditional Control to Text-to-Image Diffusion Models](https://huggingface.co/papers/2302.05543) by Lvmin Zhang and Maneesh Agrawala.
 
 This example is based on the [training example in the original ControlNet repository](https://github.com/lllyasviel/ControlNet/blob/main/docs/train.md). It trains a ControlNet to fill circles using a [small synthetic dataset](https://huggingface.co/datasets/fusing/fill50k).
 
@@ -45,7 +45,7 @@ write_basic_config()
 
 The original dataset is hosted in the [ControlNet repo](https://huggingface.co/lllyasviel/ControlNet/blob/main/training/fill50k.zip). We re-uploaded it to be compatible with `datasets` [here](https://huggingface.co/datasets/fusing/fill50k). Note that `datasets` handles dataloading within the training script.
 
-Our training examples use [Stable Diffusion 1.5](https://huggingface.co/runwayml/stable-diffusion-v1-5) as the original set of ControlNet models were trained from it. However, ControlNet can be trained to augment any Stable Diffusion compatible model (such as [CompVis/stable-diffusion-v1-4](https://huggingface.co/CompVis/stable-diffusion-v1-4)) or [stabilityai/stable-diffusion-2-1](https://huggingface.co/stabilityai/stable-diffusion-2-1).
+Our training examples use [Stable Diffusion 1.5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) as the original set of ControlNet models were trained from it. However, ControlNet can be trained to augment any Stable Diffusion compatible model (such as [CompVis/stable-diffusion-v1-4](https://huggingface.co/CompVis/stable-diffusion-v1-4)) or [stabilityai/stable-diffusion-2-1](https://huggingface.co/stabilityai/stable-diffusion-2-1).
 
 ## Training
 
@@ -59,7 +59,7 @@ wget https://huggingface.co/datasets/huggingface/documentation-images/resolve/ma
 
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
 accelerate launch train_controlnet.py \
@@ -81,7 +81,7 @@ biases.
 Gradient accumulation with a smaller batch size can be used to reduce training requirements to ~20 GB VRAM.
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
 accelerate launch train_controlnet.py \
@@ -102,7 +102,7 @@ accelerate launch train_controlnet.py \
 for running distributed training with `accelerate`. Here is an example command:
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
 accelerate launch --mixed_precision="fp16" --multi_gpu train_controlnet.py \
@@ -149,7 +149,7 @@ Optimizations:
 [bitandbytes install instructions](https://github.com/TimDettmers/bitsandbytes#requirements--installation).
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
 accelerate launch train_controlnet.py \
@@ -175,7 +175,7 @@ Optimizations:
 - set grads to none
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
 accelerate launch train_controlnet.py \
@@ -235,7 +235,7 @@ it requires CUDA toolchain with the same version as pytorch. 8-bit optimizer
 does not seem to be compatible with DeepSpeed at the moment.
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="path to save model"
 
 accelerate launch train_controlnet.py \
@@ -365,7 +365,7 @@ huggingface-cli login
 Make sure you have the `MODEL_DIR`,`OUTPUT_DIR` and `HUB_MODEL_ID` environment variables set. The `OUTPUT_DIR` and `HUB_MODEL_ID` variables specify where to save the model to on the Hub:
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="runs/fill-circle-{timestamp}"
 export HUB_MODEL_ID="controlnet-fill-circle"
 ```
@@ -397,7 +397,7 @@ Since we passed the `--push_to_hub` flag, it will automatically create a model r
 Our training script also provides limited support for streaming large datasets from the Hugging Face Hub. In order to enable streaming, one must also set `--max_train_samples`.  Here is an example command (from [this blog article](https://huggingface.co/blog/train-your-controlnet)):
 
 ```bash
-export MODEL_DIR="runwayml/stable-diffusion-v1-5"
+export MODEL_DIR="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export OUTPUT_DIR="runs/uncanny-faces-{timestamp}"
 export HUB_MODEL_ID="controlnet-uncanny-faces"
 
@@ -437,7 +437,7 @@ You can then start your training from this saved checkpoint with
  --controlnet_model_name_or_path="./control_out/500"
 ```
 
-We support training with the Min-SNR weighting strategy proposed in [Efficient Diffusion Training via Min-SNR Weighting Strategy](https://arxiv.org/abs/2303.09556) which helps to achieve faster convergence by rebalancing the loss. To use it, one needs to set the `--snr_gamma` argument. The recommended value when using it is `5.0`.
+We support training with the Min-SNR weighting strategy proposed in [Efficient Diffusion Training via Min-SNR Weighting Strategy](https://huggingface.co/papers/2303.09556) which helps to achieve faster convergence by rebalancing the loss. To use it, one needs to set the `--snr_gamma` argument. The recommended value when using it is `5.0`.
 
 We also support gradient accumulation - it is a technique that lets you use a bigger batch size than your machine would normally be able to fit into memory. You can use `gradient_accumulation_steps` argument to set gradient accumulation steps. The ControlNet author recommends using gradient accumulation to achieve better convergence. Read more [here](https://github.com/lllyasviel/ControlNet/blob/main/docs/train.md#more-consideration-sudden-converge-phenomenon-and-gradient-accumulation).
 

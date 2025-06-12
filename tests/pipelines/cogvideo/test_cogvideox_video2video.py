@@ -51,6 +51,7 @@ class CogVideoXVideoToVideoPipelineFastTests(PipelineTesterMixin, unittest.TestC
             "callback_on_step_end_tensor_inputs",
         ]
     )
+    test_xformers_attention = False
 
     def get_dummy_components(self):
         torch.manual_seed(0)
@@ -65,8 +66,8 @@ class CogVideoXVideoToVideoPipelineFastTests(PipelineTesterMixin, unittest.TestC
             time_embed_dim=2,
             text_embed_dim=32,  # Must match with tiny-random-t5
             num_layers=1,
-            sample_width=16,  # latent width: 2 -> final width: 16
-            sample_height=16,  # latent height: 2 -> final height: 16
+            sample_width=2,  # latent width: 2 -> final width: 16
+            sample_height=2,  # latent height: 2 -> final height: 16
             sample_frames=9,  # latent frames: (9 - 1) / 4 + 1 = 3 -> final frames: 9
             patch_size=2,
             temporal_compression_ratio=4,
@@ -285,10 +286,6 @@ class CogVideoXVideoToVideoPipelineFastTests(PipelineTesterMixin, unittest.TestC
             "VAE tiling should not affect the inference results",
         )
 
-    @unittest.skip("xformers attention processor does not exist for CogVideoX")
-    def test_xformers_attention_forwardGenerator_pass(self):
-        pass
-
     def test_fused_qkv_projections(self):
         device = "cpu"  # ensure determinism for the device-dependent torch.Generator
         components = self.get_dummy_components()
@@ -301,9 +298,9 @@ class CogVideoXVideoToVideoPipelineFastTests(PipelineTesterMixin, unittest.TestC
         original_image_slice = frames[0, -2:, -1, -3:, -3:]
 
         pipe.fuse_qkv_projections()
-        assert check_qkv_fusion_processors_exist(
-            pipe.transformer
-        ), "Something wrong with the fused attention processors. Expected all the attention processors to be fused."
+        assert check_qkv_fusion_processors_exist(pipe.transformer), (
+            "Something wrong with the fused attention processors. Expected all the attention processors to be fused."
+        )
         assert check_qkv_fusion_matches_attn_procs_length(
             pipe.transformer, pipe.transformer.original_attn_processors
         ), "Something wrong with the attention processors concerning the fused QKV projections."
@@ -317,12 +314,12 @@ class CogVideoXVideoToVideoPipelineFastTests(PipelineTesterMixin, unittest.TestC
         frames = pipe(**inputs).frames
         image_slice_disabled = frames[0, -2:, -1, -3:, -3:]
 
-        assert np.allclose(
-            original_image_slice, image_slice_fused, atol=1e-3, rtol=1e-3
-        ), "Fusion of QKV projections shouldn't affect the outputs."
-        assert np.allclose(
-            image_slice_fused, image_slice_disabled, atol=1e-3, rtol=1e-3
-        ), "Outputs, with QKV projection fusion enabled, shouldn't change when fused QKV projections are disabled."
-        assert np.allclose(
-            original_image_slice, image_slice_disabled, atol=1e-2, rtol=1e-2
-        ), "Original outputs should match when fused QKV projections are disabled."
+        assert np.allclose(original_image_slice, image_slice_fused, atol=1e-3, rtol=1e-3), (
+            "Fusion of QKV projections shouldn't affect the outputs."
+        )
+        assert np.allclose(image_slice_fused, image_slice_disabled, atol=1e-3, rtol=1e-3), (
+            "Outputs, with QKV projection fusion enabled, shouldn't change when fused QKV projections are disabled."
+        )
+        assert np.allclose(original_image_slice, image_slice_disabled, atol=1e-2, rtol=1e-2), (
+            "Original outputs should match when fused QKV projections are disabled."
+        )

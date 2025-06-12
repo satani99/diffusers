@@ -109,7 +109,7 @@ Now, you can pass the callback function to the `callback_on_step_end` parameter 
 import torch
 from diffusers import StableDiffusionPipeline
 
-pipeline = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16)
+pipeline = StableDiffusionPipeline.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5", torch_dtype=torch.float16)
 pipeline = pipeline.to("cuda")
 
 prompt = "a photo of an astronaut riding a horse on mars"
@@ -139,7 +139,7 @@ In this example, the diffusion process is stopped after 10 steps even though `nu
 ```python
 from diffusers import StableDiffusionPipeline
 
-pipeline = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+pipeline = StableDiffusionPipeline.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5")
 pipeline.enable_model_cpu_offload()
 num_inference_steps = 50
 
@@ -157,6 +157,84 @@ pipeline(
 )
 ```
 
+## IP Adapter Cutoff
+
+IP Adapter is an image prompt adapter that can be used for diffusion models without any changes to the underlying model. We can use the IP Adapter Cutoff Callback to disable the IP Adapter after a certain number of steps. To set up the callback, you need to specify the number of denoising steps after which the callback comes into effect. You can do so by using either one of these two arguments:
+
+- `cutoff_step_ratio`: Float number with the ratio of the steps.
+- `cutoff_step_index`: Integer number with the exact number of the step.
+
+We need to download the diffusion model and load the ip_adapter for it as follows:
+
+```py
+from diffusers import AutoPipelineForText2Image
+from diffusers.utils import load_image
+import torch
+
+pipeline = AutoPipelineForText2Image.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16).to("cuda")
+pipeline.load_ip_adapter("h94/IP-Adapter", subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
+pipeline.set_ip_adapter_scale(0.6)
+```
+The setup for the callback should look something like this:
+
+```py
+
+from diffusers import AutoPipelineForText2Image
+from diffusers.callbacks import IPAdapterScaleCutoffCallback
+from diffusers.utils import load_image
+import torch
+ 
+
+pipeline = AutoPipelineForText2Image.from_pretrained(
+    "stabilityai/stable-diffusion-xl-base-1.0", 
+    torch_dtype=torch.float16
+).to("cuda")
+
+
+pipeline.load_ip_adapter(
+    "h94/IP-Adapter", 
+    subfolder="sdxl_models", 
+    weight_name="ip-adapter_sdxl.bin"
+)
+
+pipeline.set_ip_adapter_scale(0.6)
+
+
+callback = IPAdapterScaleCutoffCallback(
+    cutoff_step_ratio=None, 
+    cutoff_step_index=5
+)
+
+image = load_image(
+    "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/ip_adapter_diner.png"
+)
+
+generator = torch.Generator(device="cuda").manual_seed(2628670641)
+
+images = pipeline(
+    prompt="a tiger sitting in a chair drinking orange juice",
+    ip_adapter_image=image,
+    negative_prompt="deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
+    generator=generator,
+    num_inference_steps=50,
+    callback_on_step_end=callback,
+).images
+
+images[0].save("custom_callback_img.png")
+```
+
+<div class="flex gap-4">
+  <div>
+    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/without_callback.png" alt="generated image of a tiger sitting in a chair drinking orange juice" />
+    <figcaption class="mt-2 text-center text-sm text-gray-500">without IPAdapterScaleCutoffCallback</figcaption>
+  </div>
+  <div>
+    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/with_callback2.png" alt="generated image of a tiger sitting in a chair drinking orange juice with ip adapter callback" />
+    <figcaption class="mt-2 text-center text-sm text-gray-500">with IPAdapterScaleCutoffCallback</figcaption>
+  </div>
+</div>
+
+
 ## Display image after each generation step
 
 > [!TIP]
@@ -171,14 +249,13 @@ def latents_to_rgb(latents):
     weights = (
         (60, -60, 25, -70),
         (60,  -5, 15, -50),
-        (60,  10, -5, -35)
+        (60,  10, -5, -35),
     )
 
     weights_tensor = torch.t(torch.tensor(weights, dtype=latents.dtype).to(latents.device))
     biases_tensor = torch.tensor((150, 140, 130), dtype=latents.dtype).to(latents.device)
     rgb_tensor = torch.einsum("...lxy,lr -> ...rxy", latents, weights_tensor) + biases_tensor.unsqueeze(-1).unsqueeze(-1)
-    image_array = rgb_tensor.clamp(0, 255)[0].byte().cpu().numpy()
-    image_array = image_array.transpose(1, 2, 0)
+    image_array = rgb_tensor.clamp(0, 255).byte().cpu().numpy().transpose(1, 2, 0)
 
     return Image.fromarray(image_array)
 ```
@@ -189,7 +266,7 @@ def latents_to_rgb(latents):
 def decode_tensors(pipe, step, timestep, callback_kwargs):
     latents = callback_kwargs["latents"]
 
-    image = latents_to_rgb(latents)
+    image = latents_to_rgb(latents[0])
     image.save(f"{step}.png")
 
     return callback_kwargs

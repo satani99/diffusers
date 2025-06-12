@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Union
 
 import PIL
 import torch
-from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
+from transformers import CLIPImageProcessor, CLIPTextModelWithProjection, CLIPTokenizer, CLIPVisionModelWithProjection
 
 from ...models import StableCascadeUNet
 from ...schedulers import DDPMWuerstchenScheduler
@@ -52,7 +52,7 @@ class StableCascadeCombinedPipeline(DiffusionPipeline):
     Args:
         tokenizer (`CLIPTokenizer`):
             The decoder tokenizer to be used for text inputs.
-        text_encoder (`CLIPTextModel`):
+        text_encoder (`CLIPTextModelWithProjection`):
             The decoder text encoder to be used for text inputs.
         decoder (`StableCascadeUNet`):
             The decoder model to be used for decoder image generation pipeline.
@@ -60,14 +60,18 @@ class StableCascadeCombinedPipeline(DiffusionPipeline):
             The scheduler to be used for decoder image generation pipeline.
         vqgan (`PaellaVQModel`):
             The VQGAN model to be used for decoder image generation pipeline.
-        feature_extractor ([`~transformers.CLIPImageProcessor`]):
-            Model that extracts features from generated images to be used as inputs for the `image_encoder`.
-        image_encoder ([`CLIPVisionModelWithProjection`]):
-            Frozen CLIP image-encoder ([clip-vit-large-patch14](https://huggingface.co/openai/clip-vit-large-patch14)).
         prior_prior (`StableCascadeUNet`):
             The prior model to be used for prior pipeline.
+        prior_text_encoder (`CLIPTextModelWithProjection`):
+            The prior text encoder to be used for text inputs.
+        prior_tokenizer (`CLIPTokenizer`):
+            The prior tokenizer to be used for text inputs.
         prior_scheduler (`DDPMWuerstchenScheduler`):
             The scheduler to be used for prior pipeline.
+        prior_feature_extractor ([`~transformers.CLIPImageProcessor`]):
+            Model that extracts features from generated images to be used as inputs for the `image_encoder`.
+        prior_image_encoder ([`CLIPVisionModelWithProjection`]):
+            Frozen CLIP image-encoder ([clip-vit-large-patch14](https://huggingface.co/openai/clip-vit-large-patch14)).
     """
 
     _load_connected_pipes = True
@@ -76,12 +80,12 @@ class StableCascadeCombinedPipeline(DiffusionPipeline):
     def __init__(
         self,
         tokenizer: CLIPTokenizer,
-        text_encoder: CLIPTextModel,
+        text_encoder: CLIPTextModelWithProjection,
         decoder: StableCascadeUNet,
         scheduler: DDPMWuerstchenScheduler,
         vqgan: PaellaVQModel,
         prior_prior: StableCascadeUNet,
-        prior_text_encoder: CLIPTextModel,
+        prior_text_encoder: CLIPTextModelWithProjection,
         prior_tokenizer: CLIPTokenizer,
         prior_scheduler: DDPMWuerstchenScheduler,
         prior_feature_extractor: Optional[CLIPImageProcessor] = None,
@@ -208,11 +212,11 @@ class StableCascadeCombinedPipeline(DiffusionPipeline):
             width (`int`, *optional*, defaults to 512):
                 The width in pixels of the generated image.
             prior_guidance_scale (`float`, *optional*, defaults to 4.0):
-                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
-                `prior_guidance_scale` is defined as `w` of equation 2. of [Imagen
-                Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting
-                `prior_guidance_scale > 1`. Higher guidance scale encourages to generate images that are closely linked
-                to the text `prompt`, usually at the expense of lower image quality.
+                Guidance scale as defined in [Classifier-Free Diffusion
+                Guidance](https://huggingface.co/papers/2207.12598). `prior_guidance_scale` is defined as `w` of
+                equation 2. of [Imagen Paper](https://huggingface.co/papers/2205.11487). Guidance scale is enabled by
+                setting `prior_guidance_scale > 1`. Higher guidance scale encourages to generate images that are
+                closely linked to the text `prompt`, usually at the expense of lower image quality.
             prior_num_inference_steps (`Union[int, Dict[float, int]]`, *optional*, defaults to 60):
                 The number of prior denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference. For more specific timestep spacing, you can pass customized
@@ -222,11 +226,11 @@ class StableCascadeCombinedPipeline(DiffusionPipeline):
                 the expense of slower inference. For more specific timestep spacing, you can pass customized
                 `timesteps`
             decoder_guidance_scale (`float`, *optional*, defaults to 0.0):
-                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
-                `guidance_scale` is defined as `w` of equation 2. of [Imagen
-                Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
-                1`. Higher guidance scale encourages to generate images that are closely linked to the text `prompt`,
-                usually at the expense of lower image quality.
+                Guidance scale as defined in [Classifier-Free Diffusion
+                Guidance](https://huggingface.co/papers/2207.12598). `guidance_scale` is defined as `w` of equation 2.
+                of [Imagen Paper](https://huggingface.co/papers/2205.11487). Guidance scale is enabled by setting
+                `guidance_scale > 1`. Higher guidance scale encourages to generate images that are closely linked to
+                the text `prompt`, usually at the expense of lower image quality.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
                 to make generation deterministic.

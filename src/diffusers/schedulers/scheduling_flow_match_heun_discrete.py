@@ -228,13 +228,14 @@ class FlowMatchHeunDiscreteScheduler(SchedulerMixin, ConfigMixin):
             generator (`torch.Generator`, *optional*):
                 A random number generator.
             return_dict (`bool`):
-                Whether or not to return a [`~schedulers.scheduling_Heun_discrete.HeunDiscreteSchedulerOutput`] or
-                tuple.
+                Whether or not to return a
+                [`~schedulers.scheduling_flow_match_heun_discrete.FlowMatchHeunDiscreteSchedulerOutput`] tuple.
 
         Returns:
-            [`~schedulers.scheduling_Heun_discrete.HeunDiscreteSchedulerOutput`] or `tuple`:
-                If return_dict is `True`, [`~schedulers.scheduling_Heun_discrete.HeunDiscreteSchedulerOutput`] is
-                returned, otherwise a tuple is returned where the first element is the sample tensor.
+            [`~schedulers.scheduling_flow_match_heun_discrete.FlowMatchHeunDiscreteSchedulerOutput`] or `tuple`:
+                If return_dict is `True`,
+                [`~schedulers.scheduling_flow_match_heun_discrete.FlowMatchHeunDiscreteSchedulerOutput`] is returned,
+                otherwise a tuple is returned where the first element is the sample tensor.
         """
 
         if (
@@ -245,7 +246,7 @@ class FlowMatchHeunDiscreteScheduler(SchedulerMixin, ConfigMixin):
             raise ValueError(
                 (
                     "Passing integer indices (e.g. from `enumerate(timesteps)`) as timesteps to"
-                    " `HeunDiscreteScheduler.step()` is not supported. Make sure to pass"
+                    " `FlowMatchHeunDiscreteScheduler.step()` is not supported. Make sure to pass"
                     " one of the `scheduler.timesteps` as a timestep."
                 ),
             )
@@ -266,14 +267,13 @@ class FlowMatchHeunDiscreteScheduler(SchedulerMixin, ConfigMixin):
 
         gamma = min(s_churn / (len(self.sigmas) - 1), 2**0.5 - 1) if s_tmin <= sigma <= s_tmax else 0.0
 
-        noise = randn_tensor(
-            model_output.shape, dtype=model_output.dtype, device=model_output.device, generator=generator
-        )
-
-        eps = noise * s_noise
         sigma_hat = sigma * (gamma + 1)
 
         if gamma > 0:
+            noise = randn_tensor(
+                model_output.shape, dtype=model_output.dtype, device=model_output.device, generator=generator
+            )
+            eps = noise * s_noise
             sample = sample + eps * (sigma_hat**2 - sigma**2) ** 0.5
 
         if self.state_in_first_order:

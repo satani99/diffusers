@@ -2,14 +2,14 @@
 
 [xDiT](https://github.com/xdit-project/xDiT) is an inference engine designed for the large scale parallel deployment of Diffusion Transformers (DiTs). xDiT provides a suite of efficient parallel approaches for Diffusion Models, as well as GPU kernel accelerations.
 
-There are four parallel methods supported in xDiT, including [Unified Sequence Parallelism](https://arxiv.org/abs/2405.07719), [PipeFusion](https://arxiv.org/abs/2405.14430), CFG parallelism and data parallelism. The four parallel methods in xDiT can be configured in a hybrid manner, optimizing communication patterns to best suit the underlying network hardware.
+There are four parallel methods supported in xDiT, including [Unified Sequence Parallelism](https://huggingface.co/papers/2405.07719), [PipeFusion](https://huggingface.co/papers/2405.14430), CFG parallelism and data parallelism. The four parallel methods in xDiT can be configured in a hybrid manner, optimizing communication patterns to best suit the underlying network hardware.
 
 Optimization orthogonal to parallelization focuses on accelerating single GPU performance. In addition to utilizing well-known Attention optimization libraries, we leverage compilation acceleration technologies such as torch.compile and onediff.
 
 The overview of xDiT is shown as follows.
 
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/methods/xdit_overview.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/methods/xdit_overview.png">
 </div>
 You can install xDiT using the following command:
 
@@ -78,37 +78,36 @@ A subset of Diffusers models are supported in xDiT, such as Flux.1, Stable Diffu
 ## Benchmark
 We tested different models on various machines, and here is some of the benchmark data.
 
-
 ### Flux.1-schnell
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/performance/flux/Flux-2k-L40.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/performance/flux/Flux-2k-L40.png">
 </div>
 
 
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/performance/flux/Flux-2K-A100.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/performance/flux/Flux-2K-A100.png">
 </div>
 
 ### Stable Diffusion 3
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/performance/sd3/L40-SD3.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/performance/sd3/L40-SD3.png">
 </div>
 
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/performance/sd3/A100-SD3.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/performance/sd3/A100-SD3.png">
 </div>
 
 ### HunyuanDiT
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/performance/hunuyuandit/L40-HunyuanDiT.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/performance/hunuyuandit/L40-HunyuanDiT.png">
 </div>
 
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/performance/hunuyuandit/A100-HunyuanDiT.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/performance/hunuyuandit/V100-HunyuanDiT.png">
 </div>
 
 <div class="flex justify-center">
-    <img src="https://github.com/xdit-project/xDiT/raw/main/assets/performance/hunuyuandit/T4-HunyuanDiT.png">
+    <img src="https://huggingface.co/datasets/xDiT/documentation-images/resolve/main/performance/hunuyuandit/T4-HunyuanDiT.png">
 </div>
 
 More detailed performance metric can be found on our [github page](https://github.com/xdit-project/xDiT?tab=readme-ov-file#perf).
@@ -117,6 +116,6 @@ More detailed performance metric can be found on our [github page](https://githu
 
 [xDiT-project](https://github.com/xdit-project/xDiT)
 
-[USP: A Unified Sequence Parallelism Approach for Long Context Generative AI](https://arxiv.org/abs/2405.07719)
+[USP: A Unified Sequence Parallelism Approach for Long Context Generative AI](https://huggingface.co/papers/2405.07719)
 
-[PipeFusion: Displaced Patch Pipeline Parallelism for Inference of Diffusion Transformer Models](https://arxiv.org/abs/2405.14430)
+[PipeFusion: Displaced Patch Pipeline Parallelism for Inference of Diffusion Transformer Models](https://huggingface.co/papers/2405.14430)

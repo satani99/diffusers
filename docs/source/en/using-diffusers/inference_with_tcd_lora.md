@@ -25,7 +25,7 @@ The major advantages of TCD are:
 - Freely change detail level: During inference, the level of detail in the image can be adjusted with a single hyperparameter, *gamma*.
 
 > [!TIP]
-> For more technical details of TCD, please refer to the [paper](https://arxiv.org/abs/2402.19159) or official [project page](https://mhh0318.github.io/tcd/)).
+> For more technical details of TCD, please refer to the [paper](https://huggingface.co/papers/2402.19159) or official [project page](https://mhh0318.github.io/tcd/).
 
 For large models like SDXL, TCD is trained with [LoRA](https://huggingface.co/docs/peft/conceptual_guides/adapter#low-rank-adaptation-lora) to reduce memory usage. This is also useful because you can reuse LoRAs between different finetuned models, as long as they share the same base model, without further training.
 
@@ -35,7 +35,7 @@ This guide will show you how to perform inference with TCD-LoRAs for a variety o
 
 | Base model                                                                                      | TCD-LoRA checkpoint                                            |
 |-------------------------------------------------------------------------------------------------|----------------------------------------------------------------|
-| [stable-diffusion-v1-5](https://huggingface.co/runwayml/stable-diffusion-v1-5)                  | [TCD-SD15](https://huggingface.co/h1t/TCD-SD15-LoRA)           |
+| [stable-diffusion-v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5)                  | [TCD-SD15](https://huggingface.co/h1t/TCD-SD15-LoRA)           |
 | [stable-diffusion-2-1-base](https://huggingface.co/stabilityai/stable-diffusion-2-1-base)       | [TCD-SD21-base](https://huggingface.co/h1t/TCD-SD21-base-LoRA) |
 | [stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | [TCD-SDXL](https://huggingface.co/h1t/TCD-SDXL-LoRA)           |
 

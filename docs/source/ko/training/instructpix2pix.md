@@ -12,7 +12,7 @@ specific language governing permissions and limitations under the License.
 
 # InstructPix2Pix
 
-[InstructPix2Pix](https://arxiv.org/abs/2211.09800)는 text-conditioned diffusion 모델이 한 이미지에 편집을 따를 수 있도록 파인튜닝하는 방법입니다. 이 방법을 사용하여 파인튜닝된 모델은 다음을 입력으로 사용합니다:
+[InstructPix2Pix](https://huggingface.co/papers/2211.09800)는 text-conditioned diffusion 모델이 한 이미지에 편집을 따를 수 있도록 파인튜닝하는 방법입니다. 이 방법을 사용하여 파인튜닝된 모델은 다음을 입력으로 사용합니다:
 
 <p align="center">
     <img src="https://huggingface.co/datasets/diffusers/docs-images/resolve/main/evaluation_diffusion_models/edit-instruction.png" alt="instructpix2pix-inputs" width=600/>
@@ -84,7 +84,7 @@ write_basic_config()
 
 
 ```bash
-export MODEL_NAME="runwayml/stable-diffusion-v1-5"
+export MODEL_NAME="stable-diffusion-v1-5/stable-diffusion-v1-5"
 export DATASET_ID="fusing/instructpix2pix-1000-samples"
 ```
 
@@ -141,7 +141,7 @@ accelerate launch --mixed_precision="fp16" train_instruct_pix2pix.py \
 
 ```bash
 accelerate launch --mixed_precision="fp16" --multi_gpu train_instruct_pix2pix.py \
- --pretrained_model_name_or_path=runwayml/stable-diffusion-v1-5 \
+ --pretrained_model_name_or_path=stable-diffusion-v1-5/stable-diffusion-v1-5 \
  --dataset_name=sayakpaul/instructpix2pix-1000-samples \
  --use_ema \
  --enable_xformers_memory_efficient_attention \

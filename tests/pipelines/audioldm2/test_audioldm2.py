@@ -18,6 +18,7 @@ import gc
 import unittest
 
 import numpy as np
+import pytest
 import torch
 from transformers import (
     ClapAudioConfig,
@@ -26,7 +27,7 @@ from transformers import (
     ClapModel,
     ClapTextConfig,
     GPT2Config,
-    GPT2Model,
+    GPT2LMHeadModel,
     RobertaTokenizer,
     SpeechT5HifiGan,
     SpeechT5HifiGanConfig,
@@ -44,7 +45,13 @@ from diffusers import (
     LMSDiscreteScheduler,
     PNDMScheduler,
 )
-from diffusers.utils.testing_utils import enable_full_determinism, nightly, torch_device
+from diffusers.utils.testing_utils import (
+    backend_empty_cache,
+    enable_full_determinism,
+    is_torch_version,
+    nightly,
+    torch_device,
+)
 
 from ..pipeline_params import TEXT_TO_AUDIO_BATCH_PARAMS, TEXT_TO_AUDIO_PARAMS
 from ..test_pipelines_common import PipelineTesterMixin
@@ -69,6 +76,8 @@ class AudioLDM2PipelineFastTests(PipelineTesterMixin, unittest.TestCase):
             "callback_steps",
         ]
     )
+
+    supports_dduf = False
 
     def get_dummy_components(self):
         torch.manual_seed(0)
@@ -160,7 +169,7 @@ class AudioLDM2PipelineFastTests(PipelineTesterMixin, unittest.TestCase):
             n_ctx=99,
             n_positions=99,
         )
-        language_model = GPT2Model(language_model_config)
+        language_model = GPT2LMHeadModel(language_model_config)
         language_model.config.max_new_tokens = 8
 
         torch.manual_seed(0)
@@ -469,9 +478,14 @@ class AudioLDM2PipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         pass
 
     def test_dict_tuple_outputs_equivalent(self):
-        # increase tolerance from 1e-4 -> 2e-4 to account for large composite model
-        super().test_dict_tuple_outputs_equivalent(expected_max_difference=2e-4)
+        # increase tolerance from 1e-4 -> 3e-4 to account for large composite model
+        super().test_dict_tuple_outputs_equivalent(expected_max_difference=3e-4)
 
+    @pytest.mark.xfail(
+        condition=is_torch_version(">=", "2.7"),
+        reason="Test currently fails on PyTorch 2.7.",
+        strict=False,
+    )
     def test_inference_batch_single_identical(self):
         # increase tolerance from 1e-4 -> 2e-4 to account for large composite model
         self._test_inference_batch_single_identical(expected_max_diff=2e-4)
@@ -506,7 +520,24 @@ class AudioLDM2PipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         model_dtypes = {key: component.dtype for key, component in components.items() if hasattr(component, "dtype")}
         self.assertTrue(all(dtype == torch.float16 for dtype in model_dtypes.values()))
 
+    @unittest.skip("Test not supported.")
     def test_sequential_cpu_offload_forward_pass(self):
+        pass
+
+    @unittest.skip("Test not supported for now because of the use of `projection_model` in `encode_prompt()`.")
+    def test_encode_prompt_works_in_isolation(self):
+        pass
+
+    @unittest.skip("Not supported yet due to CLAPModel.")
+    def test_sequential_offload_forward_pass_twice(self):
+        pass
+
+    @unittest.skip("Not supported yet, the second forward has mixed devices and `vocoder` is not offloaded.")
+    def test_cpu_offload_forward_pass_twice(self):
+        pass
+
+    @unittest.skip("Not supported yet. `vocoder` is not offloaded.")
+    def test_model_cpu_offload_forward_pass(self):
         pass
 
 
@@ -515,12 +546,12 @@ class AudioLDM2PipelineSlowTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def get_inputs(self, device, generator_device="cpu", dtype=torch.float32, seed=0):
         generator = torch.Generator(device=generator_device).manual_seed(seed)

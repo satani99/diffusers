@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 The HuggingFace Inc. team.
+# Copyright 2025 The HuggingFace Inc. team.
 # Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -180,7 +180,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
 
         if push_to_hub:
             commit_message = kwargs.pop("commit_message", None)
-            private = kwargs.pop("private", False)
+            private = kwargs.pop("private", None)
             create_pr = kwargs.pop("create_pr", False)
             token = kwargs.pop("token", None)
             repo_id = kwargs.pop("repo_id", save_directory.split(os.path.sep)[-1])
@@ -237,20 +237,19 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         If you get the error message below, you need to finetune the weights for your downstream task:
 
         ```
-        Some weights of FlaxUNet2DConditionModel were not initialized from the model checkpoint at runwayml/stable-diffusion-v1-5 and are newly initialized because the shapes did not match:
+        Some weights of FlaxUNet2DConditionModel were not initialized from the model checkpoint at stable-diffusion-v1-5/stable-diffusion-v1-5 and are newly initialized because the shapes did not match:
         ```
 
         Parameters:
             pretrained_model_name_or_path (`str` or `os.PathLike`, *optional*):
                 Can be either:
 
-                    - A string, the *repo id* (for example `runwayml/stable-diffusion-v1-5`) of a pretrained pipeline
-                      hosted on the Hub.
+                    - A string, the *repo id* (for example `stable-diffusion-v1-5/stable-diffusion-v1-5`) of a
+                      pretrained pipeline hosted on the Hub.
                     - A path to a *directory* (for example `./my_model_directory`) containing the model weights saved
                       using [`~FlaxDiffusionPipeline.save_pretrained`].
-            dtype (`str` or `jnp.dtype`, *optional*):
-                Override the default `jnp.dtype` and load the model under this dtype. If `"auto"`, the dtype is
-                automatically derived from the model's weights.
+            dtype (`jnp.dtype`, *optional*):
+                Override the default `jnp.dtype` and load the model under this dtype.
             force_download (`bool`, *optional*, defaults to `False`):
                 Whether or not to force the (re-)download of the model weights and configuration files, overriding the
                 cached versions if they exist.
@@ -293,7 +292,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         >>> # Requires to be logged in to Hugging Face hub,
         >>> # see more in [the documentation](https://huggingface.co/docs/hub/security-tokens)
         >>> pipeline, params = FlaxDiffusionPipeline.from_pretrained(
-        ...     "runwayml/stable-diffusion-v1-5",
+        ...     "stable-diffusion-v1-5/stable-diffusion-v1-5",
         ...     variant="bf16",
         ...     dtype=jnp.bfloat16,
         ... )
@@ -301,7 +300,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         >>> # Download pipeline, but use a different scheduler
         >>> from diffusers import FlaxDPMSolverMultistepScheduler
 
-        >>> model_id = "runwayml/stable-diffusion-v1-5"
+        >>> model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
         >>> dpmpp, dpmpp_state = FlaxDPMSolverMultistepScheduler.from_pretrained(
         ...     model_id,
         ...     subfolder="scheduler",
@@ -469,7 +468,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                 class_obj = import_flax_or_no_model(pipeline_module, class_name)
 
                 importable_classes = ALL_IMPORTABLE_CLASSES
-                class_candidates = {c: class_obj for c in importable_classes.keys()}
+                class_candidates = dict.fromkeys(importable_classes.keys(), class_obj)
             else:
                 # else we just import it from the library.
                 library = importlib.import_module(library_name)
@@ -559,7 +558,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         ... )
 
         >>> text2img = FlaxStableDiffusionPipeline.from_pretrained(
-        ...     "runwayml/stable-diffusion-v1-5", variant="bf16", dtype=jnp.bfloat16
+        ...     "stable-diffusion-v1-5/stable-diffusion-v1-5", variant="bf16", dtype=jnp.bfloat16
         ... )
         >>> img2img = FlaxStableDiffusionImg2ImgPipeline(**text2img.components)
         ```
