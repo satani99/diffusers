@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -268,11 +268,7 @@ class CMStochasticIterativeScheduler(SchedulerMixin, ConfigMixin):
         Gets the scalings used in the consistency model parameterization (from Appendix C of the
         [paper](https://huggingface.co/papers/2303.01469)) to enforce boundary condition.
 
-        <Tip>
-
-        `epsilon` in the equations for `c_skip` and `c_out` is set to `sigma_min`.
-
-        </Tip>
+        > [!TIP] > `epsilon` in the equations for `c_skip` and `c_out` is set to `sigma_min`.
 
         Args:
             sigma (`torch.Tensor`):
