@@ -14,7 +14,7 @@
 
 import html 
 import inspect
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 
 import regex as re
 import torch
@@ -204,7 +204,7 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         text_encoder: UMT5EncoderModel,
         vae: AutoencoderKLWan,
         scheduler: FlowMatchEulerDiscreteScheduler = None,
-        transformer: WanTransformer3DModel,
+        transformer: WanTransformer3DModel = None,
         transformer_2: WanTransformer3DModel = None,
     ):
         super().__init__()
