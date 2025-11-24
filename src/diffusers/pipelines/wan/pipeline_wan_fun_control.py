@@ -17,6 +17,7 @@ import inspect
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 
 import regex as re
+from diffusers.pipelines.cogvideo.pipeline_cogvideox_fun_control import XLA_AVAILABLE
 import torch
 from PIL import Image
 from transformers import AutoTokenizer, UMT5EncoderModel
@@ -25,12 +26,21 @@ from ...callbacks import MultiPipelineCallbacks, PipelineCallback
 from ...loaders import WanLoraLoaderMixin
 from ...models import AutoencoderKLWan, WanTransformer3DModel
 from ...schedulers import FlowMatchEulerDiscreteScheduler
-from ...utils import is_ftfy_available, logging, replace_example_docstring
+from ...utils import is_ftfy_available, logging, replace_example_docstring, is_torch_xla_available
 from ...utils.torch_utils import randn_tensor
 from ...video_processor import VideoProcessor
+from ...image_processor import VaeImageProcessor
 from ..pipeline_utils import DiffusionPipeline
 from .pipeline_output import WanPipelineOutput
+from diffusers import image_processor
 
+
+if is_torch_xla_available():
+    import torch_xla.core.xla_model as xm
+
+    XLA_AVAILABLE = True 
+else:
+    XLA_AVAILABLE = False
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -193,8 +203,8 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         vae ([`AutoencoderKLWan`]):
             Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
     """
-    _optional_components = ["transformer_2"]
-    model_cpu_offload_seq = "text_encoder->transformer_2->transformer->vae"
+    _optional_components = ["transformer", "transformer_2"]
+    model_cpu_offload_seq = "text_encoder->transformer->transformer_2->vae"
 
     _callback_tensor_inputs = ["latents", "prompt_embeds", "negative_prompt_embeds"]
 
@@ -203,9 +213,11 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         tokenizer: AutoTokenizer,
         text_encoder: UMT5EncoderModel,
         vae: AutoencoderKLWan,
-        scheduler: FlowMatchEulerDiscreteScheduler = None,
-        transformer: WanTransformer3DModel = None,
-        transformer_2: WanTransformer3DModel = None,
+        scheduler: FlowMatchEulerDiscreteScheduler,
+        transformer: Optional[WanTransformer3DModel] = None,
+        transformer_2: Optional[WanTransformer3DModel] = None,
+        boundary_ratio: Optional[float] = None,
+        expand_timesteps: bool = False,
     ):
         super().__init__()
 
@@ -218,9 +230,13 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             scheduler=scheduler,
         )
         
+        self.register_to_config(boundary_ratio=boundary_ratio)
+        self.register_to_config(expand_timesteps=expand_timesteps)
         self.vae_scale_factor_temporal = 2 ** sum(self.vae.temperal_downsample) if getattr(self, "vae", None) else 4
         self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
+        self.mask_processor = VaeImageProcessor(vae_scale_factor=self.vae.spatial_compression_ratio, do_normalize=False, do_binarize=True, do_convert_grayscale=True)
 
     # Copied from diffusers.pipelines.wan.pipeline_wan.WanPipeline._get_t5_prompt_embeds 
     def _get_t5_prompt_embeds(
@@ -244,29 +260,25 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             max_length=max_sequence_length,
             truncation=True,
             add_special_tokens=True,
+            return_attention_mask=True,
             return_tensors="pt",
         )
-        text_input_ids = text_inputs.input_ids
-        prompt_attention_mask = text_inputs.attention_mask
-        untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-
-        if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-            removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_sequence_length - 1 : -1])
-            logger.warning(
-                "The following part of your input was truncated because `max_sequence_length` is set to "
-                f" {max_sequence_length} tokens: {removed_text}"
-            )
-
-        seq_lens = prompt_attention_mask.gt(0).sum(dim=1).long()
-        prompt_embeds = self.text_encoder(text_input_ids.to(device), attention_mask=prompt_attention_mask.to(device))[0]
+        text_input_ids, maks = text_inputs.input_ids, text_inputs.attention_mask
+        seq_lens = mask.gt(0).sum(dim=1).long()
+        
+        prompt_embeds = self.text_encoder(text_input_ids.to(device), mask.to(device)).last_hidden_state
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+        prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+        prompt_embeds = torch.stack(
+            [torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))]) for u in prompt_embeds], dim=0
+        )
 
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         _, seq_len, _ = prompt_embeds.shape
         prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
         prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
 
-        return [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+        return prompt_embeds
 
     # Copied from diffusers.pipelines.wan.pipeline_wan.WanPipeline.encode_prompt
     def encode_prompt(
@@ -361,8 +373,8 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
         shape = (
             batch_size,
-            (num_frames - 1) // self.vae.temporal_compression_ratio + 1,
             num_channels_latents,
+            (num_frames - 1) // self.vae.temporal_compression_ratio + 1,
             height // self.vae.spatial_compression_ratio,
             width // self.vae.spatial_compression_ratio,
         )
@@ -373,7 +385,7 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             latents = latents.to(device)
 
         # scale the initial noise by the standard deviation required by the scheduler
-        if hasattr(self.scheduler, "init_noise_sigma"):
+        if hasattr(self.shceduler, "init_noise_sigma"):
             latents = latents * self.scheduler.init_noise_sigma
         return latents 
 
@@ -389,6 +401,7 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 current_mask = current_mask.mode()
                 masks.append(current_mask)
             mask = torch.cat(masks, dim=0)
+            # mask = mask * self.vae.config.scaling_factor
 
         if masked_image is not None:
             mask_pixel_values = []
@@ -398,6 +411,7 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 mask_pixel_value = mask_pixel_value.mode()
                 mask_pixel_values.append(mask_pixel_value)
             masked_image_latents = torch.cat(mask_pixel_values, dim=0)
+            # masked_image_latents = masked_image_latents * self.vae.config.scaling_factor
         else:
             masked_image_latents = None     
 
@@ -405,10 +419,7 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
     # Copied from diffusers.pipelines.cogvideo.pipeline_cogvideox.CogVideoXPipeline.decode_latents
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_channels, num_frames, height, width]
-        latents = 1 / self.vae_scale_factor_image * latents
-
-        frames = self.vae.decode(latents).sample
+        frames = self.vae.decode(latents.to(self.vae.dtype)).sample
         return frames
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_extra_step_kwargs
@@ -440,6 +451,8 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         negative_prompt_embeds=None,
         control_video=None,
         control_video_latents=None,
+        mask_video=None,
+        mask_video_latents=None,
     ):
         if height % 8 != 0 or width % 8 != 0:
             raise ValueError(f"`height` and `width` have to be divisible by 8 but are {height} and {width}.")
@@ -486,7 +499,12 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             raise ValueError(
                 f"Cannot forward both `control_video` and `control_video_latents`. Please make sure to pass only one of these parameters."
             )
-        
+
+        if mask_video is not None and mask_video_latents is not None:
+            raise ValueError(
+                f"Cannot forward both `mask_video` and `mask_video_latents`. Please make sure to pass only one of these parameters."
+            )
+
     @property
     def guidance_scale(self):
         return self._guidance_scale
@@ -503,6 +521,14 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
     def interrupt(self):
         return self._interrupt
 
+    @property
+    def do_classifier_free_guidance(self):
+        return self._guidance_scale > 1.0
+
+    @property
+    def current_timestep(self):
+        return self._current_timestep
+
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
@@ -511,19 +537,22 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         control_video: Optional[List[Image.Image]] = None,
         control_video_latents: Optional[torch.Tensor] = None,
+        mask_video: Optional[List[Image.Image]] = None,
+        mask_video_latents: Optional[torch.Tensor] = None,
+        start_image: Optional[Image.Image] = None,
+        ref_image: Optional[Image.Image] = None,
         height: int = 480,
-        width: int = 720,
+        width: int = 832,
         num_inference_steps: int = 50,
         timesteps: Optional[List[int]] = None,
         guidance_scale: float = 6,
-        use_dynamic_cfg: bool = False,
         num_videos_per_prompt: int = 1,
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
         negative_prompt_embeds: Optional[torch.Tensor] = None,
-        output_type: str = "pil",
+        output_type: Optional[str] = "np",
         return_dict: bool = True,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         callback_on_step_end: Optional[
@@ -532,6 +561,7 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 226,
         boundary: float = 0.875,
+        shift: int = 5,
     ) -> Union[WanPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -612,6 +642,17 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
+        if control_video is not None and isinstance(control_video[0], Image.Image):
+            control_video = [control_video]
+
+        if mask_video is not None and isinstance(mask_video[0], Image.Image):
+            mask_video = [mask_video]
+
+        if start_image is not None and isinstance(start_image, Image.Image):
+            start_image = [start_image]
+
+        if ref_image is not None and isinstance(ref_image, Image.Image):
+            ref_image = [ref_image]
         num_videos_per_prompt = 1
 
         # 1. Check inputs. Raise error if not correct
@@ -625,10 +666,16 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             negative_prompt_embeds,
             control_video,
             control_video_latents,
+            mask_video,
+            mask_video_latents,
         )
         self._guidance_scale = guidance_scale
         self._attention_kwargs = attention_kwargs
+        self._current_timestep = None
         self._interrupt = False
+
+        device = self._execution_device
+        weight_dtype = self.text_encoder.dtype
 
         # 2. Default call parameters
         if prompt is not None  and isinstance(prompt, str):
@@ -638,35 +685,31 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         else:
             batch_size = prompt_embeds.shape[0]
 
-        if control_video is not None and isinstance(control_video[0], Image.Image):
-            control_video = [control_video]
-
-        device = self._execution_device
-
-        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
-        # of the Imagen paper: https://arxiv.org/abs/2205.11487.pdf . `guidance_scale = 1`
-        # corresponds to doing no classifier free guidance.
-        do_classifier_free_guidance = guidance_scale > 1.0
-
         # 3. Encode input prompt
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
             negative_prompt,
-            do_classifier_free_guidance,
+            self.do_classifier_free_guidance,
             num_videos_per_prompt,
             prompt_embeds,
             negative_prompt_embeds,
             max_sequence_length,
             device,
         )
-        if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+
+        transformer_dtype = self.transformer.dtype if self.transformer is not None else self.transformer_2.dtype
+        prompt_embeds = prompt_embeds.to(transformer_dtype)
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(transformer_dtype)
+
+        # if self.do_classifier_free_guidance:
+        #     prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
 
         # 4. Prepare timesteps 
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
         self._num_timesteps = len(timesteps)
 
-        # 5. Prepare latents.
+        # 5. Prepare latents
         latent_channels = self.transformer.config.in_channels // 2
         num_frames = len(control_video[0]) if control_video is not None else control_video_latents.size(2)
         latents = self.prepare_latents(
@@ -688,60 +731,71 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         _, control_video_latents = self.prepare_control_latents(None, control_video)
         control_video_latents = control_video_latents.permute(0, 2, 1, 3, 4)
 
+        if mask_video is not None:
+            mask_video = self.mask_processor.preprocess(mask_video, height=height, width=width)
+            mask_video = mask_video.to(device=device, dtype=prompt_embeds.dtype)
+
+            _, mask_video_latents = self.prepare_control_latents(None, mask_video)
+            mask_video_latents = mask_video_latents.permute(0, 2, 1, 3, 4)
+        else:
+            mask_video_latents = torch.zeros_like(latents).to(device, weight_dtype)
+
+        if start_image is not None:
+            start_image = self.image_processor.preprocess(start_image, height=height, width=width)
+            start_image = start_image.to(device=device, dtype=prompt_embeds.dtype)
+
+            _, start_image_latents = self.prepare_control_latents(None, start_image)
+            start_image_latents = start_image_latents.permute(0, 2, 1, 3, 4)
+        else:
+            start_image_latents = torch.zeros_like(latents)
+        
+        ref_image_latents = None
+
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         # 7. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+        self._num_timesteps = len(timesteps)
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
-            # for DPM-solver++
-            old_pred_original_sample = None
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     continue
+                
+                self._current_timestep = t
 
-                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                latent_model_input = latent_model_input.to(transformer_dtype)
 
-                latent_control_input = (
-                    torch.cat([control_video_latents] * 2) if do_classifier_free_guidance else control_video_latents
-                )
+                latent_control_input = latent_control_input.to(transformer_dtype)
                 latent_model_input = torch.cat([latent_model_input, latent_control_input], dim=2)
 
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                timestep = t.expand(latent_model_input.shape[0])
-
-                if self.transformer_2 is not None:
-                    if t >= boundary * self.scheduler.config.num_train_timesteps:
-                        local_transformer = self.transformer_2
-                    else:
-                        local_transformer = self.transformer
-                else:
-                    local_transformer = self.transformer 
+                timestep = t.expand(latent_model_input.shape[0]) 
 
                 # predict noise model output 
-                noise_pred = local_transformer(
+                noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep,
                     encoder_hidden_states=prompt_embeds,
                     attention_kwargs=attention_kwargs,
                     return_dict=False,
                 )[0]
-                noise_pred = noise_pred.float()
+                # noise_pred = noise_pred.float()
 
-                # perform guidance
-                if use_dynamic_cfg:
-                    self._guidance_scale = 1 + guidance_scale * (
-                        (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
-                    )
-                if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                if self.do_classifier_free_guidance:
+                    noise_uncond = self.transformer(
+                        hidden_states=latent_model_input,
+                        timestep=timestep,
+                        encoder_hidden_states=negative_prompt_embeds,
+                        attention_kwargs=attention_kwargs,
+                        return_dict=False,
+                    )[0]
+                    noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-                latents = latents.to(prompt_embeds.dtype)
+                # latents = latents.to(prompt_embeds.dtype)
 
                 # call the callback, if provided
                 if callback_on_step_end is not None:
@@ -756,6 +810,11 @@ class WanFunControlPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
+
+                if XLA_AVAILABLE:
+                    xm.mark_step()
+
+        self._current_timestep = None
         
         if not output_type == "latents":
             video = self.decode_latents(latents)
