@@ -572,7 +572,7 @@ class CogVideoXFunControlPipeline(metaclass=DummyObject):
         requires_backends(cls, ["torch", "transformers"])
 
 
-class CogVideoXFunInpPipeline(metaclass=DummyObjects):
+class CogVideoXFunInpaintPipeline(metaclass=DummyObjects):
     _backends = ["torch", "transformers"]
 
     def __init__(self, *args, **kwargs):
